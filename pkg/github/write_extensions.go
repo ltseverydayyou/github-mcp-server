@@ -305,7 +305,7 @@ func ReleaseWrite(t translations.TranslationHelperFunc) inventory.ServerTool {
 
 // GitHubAPI is an authenticated REST API escape hatch similar to `gh api`.
 // It covers endpoints that do not yet have a dedicated MCP tool.
-func GitHubAPI(t translations.TranslationHelperFunc) inventory.ServerTool {
+func API(t translations.TranslationHelperFunc) inventory.ServerTool {
 	return NewTool(
 		ToolsetMetadataRepos,
 		mcp.Tool{
@@ -375,7 +375,7 @@ func GitHubAPI(t translations.TranslationHelperFunc) inventory.ServerTool {
 }
 
 // GitHubGraphQL executes an authenticated arbitrary GitHub GraphQL query or mutation.
-func GitHubGraphQL(t translations.TranslationHelperFunc) inventory.ServerTool {
+func GraphQL(t translations.TranslationHelperFunc) inventory.ServerTool {
 	return NewTool(
 		ToolsetMetadataRepos,
 		mcp.Tool{
@@ -430,7 +430,7 @@ func GitHubGraphQL(t translations.TranslationHelperFunc) inventory.ServerTool {
 }
 
 // GitHubFileUpload streams a server-local file to an authenticated GitHub upload endpoint.
-func GitHubFileUpload(t translations.TranslationHelperFunc) inventory.ServerTool {
+func FileUpload(t translations.TranslationHelperFunc) inventory.ServerTool {
 	return NewTool(
 		ToolsetMetadataRepos,
 		mcp.Tool{

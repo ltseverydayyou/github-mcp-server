@@ -1355,6 +1355,29 @@ The following sets of tools are available:
   - `repo`: Repository name (string, required)
   - `tag`: Tag name (string, required)
 
+- **github_api** - Call GitHub REST API
+  - **Required OAuth Scopes**: `repo`
+  - `accept`: Optional Accept header for GitHub API previews or alternate representations. (string, optional)
+  - `body`: Optional JSON request body. (object, optional)
+  - `endpoint`: Relative GitHub REST API endpoint without a scheme or host. (string, required)
+  - `method`: HTTP method. (string, required)
+
+- **github_file_upload** - Upload local file to GitHub
+  - **Required OAuth Scopes**: `repo`
+  - `content_type`: Alias for media_type; takes precedence when both are supplied. (string, optional)
+  - `endpoint`: Relative GitHub upload endpoint without a scheme or host. Existing query parameters are preserved. (string, required)
+  - `file_path`: Local filesystem path on the MCP server host. Remote URLs are rejected. (string, required)
+  - `filename`: Alias for name. Used when name is omitted. (string, optional)
+  - `label`: Optional label query parameter. (string, optional)
+  - `media_type`: Optional MIME/media type. Defaults to application/octet-stream. (string, optional)
+  - `name`: Optional filename/name query parameter. Defaults to the file basename. (string, optional)
+  - `query`: Optional additional query parameters appended to the endpoint. (object, optional)
+
+- **github_graphql** - Call GitHub GraphQL API
+  - **Required OAuth Scopes**: `repo`
+  - `query`: GraphQL query or mutation document. (string, required)
+  - `variables`: Optional GraphQL variables object. (object, optional)
+
 - **list_branches** - List branches
   - **Required OAuth Scopes**: `repo`
   - `owner`: Repository owner (string, required)
@@ -1405,6 +1428,28 @@ The following sets of tools are available:
   - `message`: Commit message (string, required)
   - `owner`: Repository owner (string, required)
   - `repo`: Repository name (string, required)
+
+- **release_write** - Manage releases
+  - **Required OAuth Scopes**: `repo`
+  - `asset_id`: Release asset ID for update_asset or delete_asset. (number, optional)
+  - `body`: Release notes/body. (string, optional)
+  - `content_base64`: Base64-encoded bytes for upload_asset. Mutually exclusive with file_path. (string, optional)
+  - `discussion_category_name`: Optional discussion category to create for the release. (string, optional)
+  - `draft`: Whether the release is a draft. (boolean, optional)
+  - `file_path`: Local filesystem path on the MCP server host for upload_asset. Mutually exclusive with content_base64; streamed directly when provided. (string, optional)
+  - `generate_release_notes`: Ask GitHub to generate release notes when creating the release. (boolean, optional)
+  - `label`: Optional release asset label. (string, optional)
+  - `make_latest`: Latest-release behavior. (string, optional)
+  - `media_type`: Optional MIME type for upload_asset. (string, optional)
+  - `method`: Release operation to perform. (string, required)
+  - `name`: Release name; for asset operations, the asset filename/name. (string, optional)
+  - `owner`: Repository owner. (string, required)
+  - `prerelease`: Whether the release is a prerelease. (boolean, optional)
+  - `release_id`: Release ID for update, delete, or upload_asset. (number, optional)
+  - `repo`: Repository name. (string, required)
+  - `state`: Optional asset state for update_asset. (string, optional)
+  - `tag_name`: Tag name. Required for create; optional for update. (string, optional)
+  - `target_commitish`: Target branch or commitish. (string, optional)
 
 - **search_code** - Search code
   - **Required OAuth Scopes**: `repo`
