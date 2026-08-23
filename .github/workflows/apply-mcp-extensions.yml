@@ -1,0 +1,288 @@
+name: Apply MCP write extensions
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore upstream files and apply extensions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote add upstream https://github.com/github/github-mcp-server.git || true
+          git fetch upstream main
+          git checkout upstream/main -- pkg/github/repositories.go pkg/github/tools.go
+
+          cat > pkg/github/write_extensions.go <<'GOEOF'
+          package github
+
+          import (
+          	"context"
+          	"encoding/base64"
+          	"encoding/json"
+          	"fmt"
+          	"io"
+          	"os"
+          	"strings"
+
+          	ghErrors "github.com/github/github-mcp-server/pkg/errors"
+          	"github.com/github/github-mcp-server/pkg/inventory"
+          	"github.com/github/github-mcp-server/pkg/scopes"
+          	"github.com/github/github-mcp-server/pkg/translations"
+          	"github.com/github/github-mcp-server/pkg/utils"
+          	"github.com/google/go-github/v89/github"
+          	"github.com/google/jsonschema-go/jsonschema"
+          	"github.com/modelcontextprotocol/go-sdk/mcp"
+          )
+
+          // ReleaseWrite creates, updates, deletes releases and manages release assets.
+          func ReleaseWrite(t translations.TranslationHelperFunc) inventory.ServerTool {
+          	return NewTool(
+          		ToolsetMetadataRepos,
+          		mcp.Tool{
+          			Name:        "release_write",
+          			Description: t("TOOL_RELEASE_WRITE_DESCRIPTION", "Create, update, delete GitHub releases and upload, update, or delete release assets."),
+          			Annotations: &mcp.ToolAnnotations{
+          				Title:           t("TOOL_RELEASE_WRITE_USER_TITLE", "Manage releases"),
+          				ReadOnlyHint:    false,
+          				DestructiveHint: jsonschema.Ptr(true),
+          			},
+          			InputSchema: &jsonschema.Schema{
+          				Type: "object",
+          				Properties: map[string]*jsonschema.Schema{
+          					"method": {
+          						Type:        "string",
+          						Description: "Release operation to perform.",
+          						Enum:        []any{"create", "update", "delete", "upload_asset", "update_asset", "delete_asset"},
+          					},
+          					"owner": {Type: "string", Description: "Repository owner."},
+          					"repo":  {Type: "string", Description: "Repository name."},
+          					"release_id": {Type: "number", Description: "Release ID for update, delete, or upload_asset."},
+          					"asset_id": {Type: "number", Description: "Release asset ID for update_asset or delete_asset."},
+          					"tag_name": {Type: "string", Description: "Tag name. Required for create; optional for update."},
+          					"target_commitish": {Type: "string", Description: "Target branch or commitish."},
+          					"name": {Type: "string", Description: "Release name; for asset operations, the asset filename/name."},
+          					"body": {Type: "string", Description: "Release notes/body."},
+          					"draft": {Type: "boolean", Description: "Whether the release is a draft."},
+          					"prerelease": {Type: "boolean", Description: "Whether the release is a prerelease."},
+          					"make_latest": {Type: "string", Description: "Latest-release behavior.", Enum: []any{"true", "false", "legacy"}},
+          					"discussion_category_name": {Type: "string", Description: "Optional discussion category to create for the release."},
+          					"generate_release_notes": {Type: "boolean", Description: "Ask GitHub to generate release notes when creating the release."},
+          					"content_base64": {Type: "string", Description: "Base64-encoded bytes for upload_asset."},
+          					"label": {Type: "string", Description: "Optional release asset label."},
+          					"media_type": {Type: "string", Description: "Optional MIME type for upload_asset."},
+          					"state": {Type: "string", Description: "Optional asset state for update_asset."},
+          				},
+          				Required: []string{"method", "owner", "repo"},
+          			},
+          		},
+          		[]scopes.Scope{scopes.Repo},
+          		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
+          			owner, err := RequiredParam[string](args, "owner")
+          			if err != nil { return utils.NewToolResultError(err.Error()), nil, nil }
+          			repo, err := RequiredParam[string](args, "repo")
+          			if err != nil { return utils.NewToolResultError(err.Error()), nil, nil }
+          			method, err := RequiredParam[string](args, "method")
+          			if err != nil { return utils.NewToolResultError(err.Error()), nil, nil }
+
+          			client, err := deps.GetClient(ctx)
+          			if err != nil { return nil, nil, fmt.Errorf("failed to get GitHub client: %w", err) }
+
+          			releaseID, _ := OptionalIntParam(args, "release_id")
+          			assetID, _ := OptionalIntParam(args, "asset_id")
+          			tagName, _ := OptionalParam[string](args, "tag_name")
+          			target, _ := OptionalParam[string](args, "target_commitish")
+          			name, _ := OptionalParam[string](args, "name")
+          			body, _ := OptionalParam[string](args, "body")
+          			draft, _ := OptionalParam[bool](args, "draft")
+          			prerelease, _ := OptionalParam[bool](args, "prerelease")
+          			makeLatest, _ := OptionalParam[string](args, "make_latest")
+          			discussionCategory, _ := OptionalParam[string](args, "discussion_category_name")
+          			generateNotes, _ := OptionalParam[bool](args, "generate_release_notes")
+
+          			switch method {
+          			case "create":
+          				if tagName == "" { return utils.NewToolResultError("tag_name is required for create"), nil, nil }
+          				req := github.CreateReleaseRequest{TagName: tagName}
+          				if _, ok := args["target_commitish"]; ok { req.TargetCommitish = github.Ptr(target) }
+          				if _, ok := args["name"]; ok { req.Name = github.Ptr(name) }
+          				if _, ok := args["body"]; ok { req.Body = github.Ptr(body) }
+          				if _, ok := args["draft"]; ok { req.Draft = github.Ptr(draft) }
+          				if _, ok := args["prerelease"]; ok { req.Prerelease = github.Ptr(prerelease) }
+          				if _, ok := args["make_latest"]; ok { req.MakeLatest = github.Ptr(makeLatest) }
+          				if _, ok := args["discussion_category_name"]; ok { req.DiscussionCategoryName = github.Ptr(discussionCategory) }
+          				if _, ok := args["generate_release_notes"]; ok { req.GenerateReleaseNotes = github.Ptr(generateNotes) }
+          				release, resp, err := client.Repositories.CreateRelease(ctx, owner, repo, req)
+          				if err != nil { return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to create release", resp, err), nil, nil }
+          				defer closeGitHubResponse(resp)
+          				return marshalWriteResult(release)
+
+          			case "update":
+          				if releaseID == 0 { return utils.NewToolResultError("release_id is required for update"), nil, nil }
+          				req := github.UpdateReleaseRequest{}
+          				if _, ok := args["tag_name"]; ok { req.TagName = github.Ptr(tagName) }
+          				if _, ok := args["target_commitish"]; ok { req.TargetCommitish = github.Ptr(target) }
+          				if _, ok := args["name"]; ok { req.Name = github.Ptr(name) }
+          				if _, ok := args["body"]; ok { req.Body = github.Ptr(body) }
+          				if _, ok := args["draft"]; ok { req.Draft = github.Ptr(draft) }
+          				if _, ok := args["prerelease"]; ok { req.Prerelease = github.Ptr(prerelease) }
+          				if _, ok := args["make_latest"]; ok { req.MakeLatest = github.Ptr(makeLatest) }
+          				if _, ok := args["discussion_category_name"]; ok { req.DiscussionCategoryName = github.Ptr(discussionCategory) }
+          				release, resp, err := client.Repositories.UpdateRelease(ctx, owner, repo, int64(releaseID), req)
+          				if err != nil { return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to update release", resp, err), nil, nil }
+          				defer closeGitHubResponse(resp)
+          				return marshalWriteResult(release)
+
+          			case "delete":
+          				if releaseID == 0 { return utils.NewToolResultError("release_id is required for delete"), nil, nil }
+          				resp, err := client.Repositories.DeleteRelease(ctx, owner, repo, int64(releaseID))
+          				if err != nil { return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to delete release", resp, err), nil, nil }
+          				defer closeGitHubResponse(resp)
+          				return utils.NewToolResultText("release deleted"), nil, nil
+
+          			case "upload_asset":
+          				if releaseID == 0 { return utils.NewToolResultError("release_id is required for upload_asset"), nil, nil }
+          				if name == "" { return utils.NewToolResultError("name is required for upload_asset"), nil, nil }
+          				content, err := RequiredParam[string](args, "content_base64")
+          				if err != nil { return utils.NewToolResultError(err.Error()), nil, nil }
+          				decoded, err := base64.StdEncoding.DecodeString(content)
+          				if err != nil { return utils.NewToolResultError("content_base64 is not valid base64"), nil, nil }
+          				tmp, err := os.CreateTemp("", "github-mcp-release-asset-*")
+          				if err != nil { return nil, nil, err }
+          				tmpPath := tmp.Name()
+          				defer os.Remove(tmpPath)
+          				if _, err := tmp.Write(decoded); err != nil { _ = tmp.Close(); return nil, nil, err }
+          				if _, err := tmp.Seek(0, io.SeekStart); err != nil { _ = tmp.Close(); return nil, nil, err }
+          				label, _ := OptionalParam[string](args, "label")
+          				mediaType, _ := OptionalParam[string](args, "media_type")
+          				asset, resp, err := client.Repositories.UploadReleaseAsset(ctx, owner, repo, int64(releaseID), &github.UploadOptions{Name: name, Label: label, MediaType: mediaType}, tmp)
+          				_ = tmp.Close()
+          				if err != nil { return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to upload release asset", resp, err), nil, nil }
+          				defer closeGitHubResponse(resp)
+          				return marshalWriteResult(asset)
+
+          			case "update_asset":
+          				if assetID == 0 { return utils.NewToolResultError("asset_id is required for update_asset"), nil, nil }
+          				req := github.UpdateReleaseAssetRequest{}
+          				label, _ := OptionalParam[string](args, "label")
+          				state, _ := OptionalParam[string](args, "state")
+          				if _, ok := args["name"]; ok { req.Name = github.Ptr(name) }
+          				if _, ok := args["label"]; ok { req.Label = github.Ptr(label) }
+          				if _, ok := args["state"]; ok { req.State = github.Ptr(state) }
+          				asset, resp, err := client.Repositories.UpdateReleaseAsset(ctx, owner, repo, int64(assetID), req)
+          				if err != nil { return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to update release asset", resp, err), nil, nil }
+          				defer closeGitHubResponse(resp)
+          				return marshalWriteResult(asset)
+
+          			case "delete_asset":
+          				if assetID == 0 { return utils.NewToolResultError("asset_id is required for delete_asset"), nil, nil }
+          				resp, err := client.Repositories.DeleteReleaseAsset(ctx, owner, repo, int64(assetID))
+          				if err != nil { return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to delete release asset", resp, err), nil, nil }
+          				defer closeGitHubResponse(resp)
+          				return utils.NewToolResultText("release asset deleted"), nil, nil
+          			default:
+          				return utils.NewToolResultError(fmt.Sprintf("unknown method: %s", method)), nil, nil
+          			}
+          		},
+          	)
+          }
+
+          // GitHubAPI is an authenticated REST API escape hatch similar to `gh api`.
+          // It covers endpoints that do not yet have a dedicated MCP tool.
+          func GitHubAPI(t translations.TranslationHelperFunc) inventory.ServerTool {
+          	return NewTool(
+          		ToolsetMetadataRepos,
+          		mcp.Tool{
+          			Name:        "github_api",
+          			Description: t("TOOL_GITHUB_API_DESCRIPTION", "Call an authenticated GitHub REST API endpoint for operations not covered by dedicated MCP tools. Use a relative endpoint such as repos/OWNER/REPO/milestones."),
+          			Annotations: &mcp.ToolAnnotations{
+          				Title:           t("TOOL_GITHUB_API_USER_TITLE", "Call GitHub REST API"),
+          				ReadOnlyHint:    false,
+          				DestructiveHint: jsonschema.Ptr(true),
+          			},
+          			InputSchema: &jsonschema.Schema{
+          				Type: "object",
+          				Properties: map[string]*jsonschema.Schema{
+          					"method": {Type: "string", Description: "HTTP method.", Enum: []any{"GET", "POST", "PUT", "PATCH", "DELETE"}},
+          					"endpoint": {Type: "string", Description: "Relative GitHub REST API endpoint without a scheme or host."},
+          					"body": {Type: "object", Description: "Optional JSON request body.", Properties: map[string]*jsonschema.Schema{}},
+          					"accept": {Type: "string", Description: "Optional Accept header for GitHub API previews or alternate representations."},
+          				},
+          				Required: []string{"method", "endpoint"},
+          			},
+          		},
+          		[]scopes.Scope{scopes.Repo},
+          		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
+          			method, err := RequiredParam[string](args, "method")
+          			if err != nil { return utils.NewToolResultError(err.Error()), nil, nil }
+          			endpoint, err := RequiredParam[string](args, "endpoint")
+          			if err != nil { return utils.NewToolResultError(err.Error()), nil, nil }
+          			endpoint = strings.TrimPrefix(strings.TrimSpace(endpoint), "/")
+          			if endpoint == "" || strings.Contains(endpoint, "://") || strings.HasPrefix(endpoint, "/") || strings.Contains(endpoint, "..") {
+          				return utils.NewToolResultError("endpoint must be a relative GitHub REST API path"), nil, nil
+          			}
+          			var body any
+          			if v, ok := args["body"]; ok { body = v }
+          			client, err := deps.GetClient(ctx)
+          			if err != nil { return nil, nil, fmt.Errorf("failed to get GitHub client: %w", err) }
+          			req, err := client.NewRequest(ctx, method, endpoint, body)
+          			if err != nil { return utils.NewToolResultErrorFromErr("failed to build GitHub API request", err), nil, nil }
+          			if accept, _ := OptionalParam[string](args, "accept"); accept != "" { req.Header.Set("Accept", accept) }
+          			var output any
+          			resp, err := client.Do(req, &output)
+          			if err != nil { return ghErrors.NewGitHubAPIErrorResponse(ctx, "GitHub API request failed", resp, err), nil, nil }
+          			defer closeGitHubResponse(resp)
+          			if output == nil {
+          				status := 0
+          				if resp != nil { status = resp.StatusCode }
+          				return utils.NewToolResultText(fmt.Sprintf("GitHub API request succeeded with status %d", status)), nil, nil
+          			}
+          			return marshalWriteResult(output)
+          		},
+          	)
+          }
+
+          func marshalWriteResult(v any) (*mcp.CallToolResult, any, error) {
+          	raw, err := json.Marshal(v)
+          	if err != nil { return nil, nil, fmt.Errorf("failed to marshal response: %w", err) }
+          	return utils.NewToolResultText(string(raw)), nil, nil
+          }
+
+          func closeGitHubResponse(resp *github.Response) {
+          	if resp != nil && resp.Body != nil { _ = resp.Body.Close() }
+          }
+          GOEOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('pkg/github/tools.go')
+          s = p.read_text()
+          needle = '\t\tGetReleaseByTag(t),\n'
+          replacement = needle + '\t\tReleaseWrite(t),\n\t\tGitHubAPI(t),\n'
+          if 'ReleaseWrite(t),' not in s:
+              if needle not in s:
+                  raise SystemExit('release registration anchor not found')
+              s = s.replace(needle, replacement, 1)
+          p.write_text(s)
+          PY
+
+          gofmt -w pkg/github/write_extensions.go pkg/github/tools.go pkg/github/repositories.go
+          go test ./pkg/github
+
+          rm -f .github/workflows/apply-mcp-extensions.yml
+
+          git config user.name "Vyperia"
+          git config user.email "117316014+ltseverydayyou@users.noreply.github.com"
+          git add pkg/github/repositories.go pkg/github/tools.go pkg/github/write_extensions.go .github/workflows/apply-mcp-extensions.yml
+          git commit -m "Add release management and GitHub REST write support"
+          git push origin HEAD:main
