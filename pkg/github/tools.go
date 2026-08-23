@@ -193,7 +193,7 @@ type toolConfig struct {
 	hostType utils.HostType
 }
 
-// WithHost tells the tools which deployment they will talk to, so those with
+// WithHost tells the tools which deployment the tools will talk to, so those with
 // host-specific capabilities can adapt. Derive it from utils.ParseHostType.
 func WithHost(h utils.HostType) ToolOption {
 	return func(c *toolConfig) { c.hostType = h }
@@ -232,6 +232,8 @@ func AllTools(t translations.TranslationHelperFunc, opts ...ToolOption) []invent
 		GetReleaseByTag(t),
 		ReleaseWrite(t),
 		GitHubAPI(t),
+		GitHubGraphQL(t),
+		GitHubFileUpload(t),
 		CreateOrUpdateFile(t),
 		CreateRepository(t),
 		DeleteRepository(t),
