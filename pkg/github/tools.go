@@ -236,6 +236,7 @@ func AllTools(t translations.TranslationHelperFunc, opts ...ToolOption) []invent
 		FileUpload(t),
 		CreateOrUpdateFile(t),
 		CreateRepository(t),
+		UpdateRepository(t),
 		DeleteRepository(t),
 		ForkRepository(t),
 		CreateBranch(t),
