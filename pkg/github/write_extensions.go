@@ -63,7 +63,7 @@ func ReleaseWrite(t translations.TranslationHelperFunc) inventory.ServerTool {
 				Required: []string{"method", "owner", "repo"},
 			},
 		},
-		[]scopes.Scope{scopes.Repo},
+		scopes.RequireAll(scopes.Repo),
 		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
 			owner, err := RequiredParam[string](args, "owner")
 			if err != nil {
@@ -327,7 +327,7 @@ func API(t translations.TranslationHelperFunc) inventory.ServerTool {
 				Required: []string{"method", "endpoint"},
 			},
 		},
-		[]scopes.Scope{scopes.Repo},
+		scopes.RequireAll(scopes.Repo),
 		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
 			method, err := RequiredParam[string](args, "method")
 			if err != nil {
@@ -395,7 +395,7 @@ func GraphQL(t translations.TranslationHelperFunc) inventory.ServerTool {
 				Required: []string{"query"},
 			},
 		},
-		[]scopes.Scope{scopes.Repo},
+		scopes.RequireAll(scopes.Repo),
 		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
 			query, err := RequiredParam[string](args, "query")
 			if err != nil {
@@ -456,7 +456,7 @@ func FileUpload(t translations.TranslationHelperFunc) inventory.ServerTool {
 				Required: []string{"endpoint", "file_path"},
 			},
 		},
-		[]scopes.Scope{scopes.Repo},
+		scopes.RequireAll(scopes.Repo),
 		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
 			endpoint, err := RequiredParam[string](args, "endpoint")
 			if err != nil {
