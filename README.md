@@ -1337,14 +1337,14 @@ The following sets of tools are available:
   - `tag`: Tag name (string, required)
 
 - **github_api** - Call GitHub REST API
-  - **Required OAuth Scopes**: `repo`
+  - **OAuth Challenge Scopes**: `repo`
   - `accept`: Optional Accept header for GitHub API previews or alternate representations. (string, optional)
   - `body`: Optional JSON request body. (object, optional)
   - `endpoint`: Relative GitHub REST API endpoint without a scheme or host. (string, required)
   - `method`: HTTP method. (string, required)
 
 - **github_file_upload** - Upload local file to GitHub
-  - **Required OAuth Scopes**: `repo`
+  - **OAuth Challenge Scopes**: `repo`
   - `content_type`: Alias for media_type; takes precedence when both are supplied. (string, optional)
   - `endpoint`: Relative GitHub upload endpoint without a scheme or host. Existing query parameters are preserved. (string, required)
   - `file_path`: Local filesystem path on the MCP server host. Remote URLs are rejected. (string, required)
@@ -1355,7 +1355,7 @@ The following sets of tools are available:
   - `query`: Optional additional query parameters appended to the endpoint. (object, optional)
 
 - **github_graphql** - Call GitHub GraphQL API
-  - **Required OAuth Scopes**: `repo`
+  - **OAuth Challenge Scopes**: `repo`
   - `query`: GraphQL query or mutation document. (string, required)
   - `variables`: Optional GraphQL variables object. (object, optional)
 
@@ -1411,7 +1411,7 @@ The following sets of tools are available:
   - `repo`: Repository name (string, required)
 
 - **release_write** - Manage releases
-  - **Required OAuth Scopes**: `repo`
+  - **OAuth Challenge Scopes**: `repo`
   - `asset_id`: Release asset ID for update_asset or delete_asset. (number, optional)
   - `body`: Release notes/body. (string, optional)
   - `content_base64`: Base64-encoded bytes for upload_asset. Mutually exclusive with file_path. (string, optional)
@@ -1457,6 +1457,27 @@ The following sets of tools are available:
   - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
   - `query`: Repository search query. Examples: 'machine learning in:name stars:>1000 language:python', 'topic:react', 'user:facebook'. Supports advanced search syntax for precise filtering. (string, required)
   - `sort`: Sort repositories by field, defaults to best match (string, optional)
+
+- **update_repository** - Update repository
+  - **OAuth Challenge Scopes**: `repo`
+  - `allow_auto_merge`: Whether auto-merge is allowed. (boolean, optional)
+  - `allow_merge_commit`: Whether merge commits are allowed for pull requests. (boolean, optional)
+  - `allow_rebase_merge`: Whether rebase merging pull requests is allowed. (boolean, optional)
+  - `allow_squash_merge`: Whether squash merging pull requests is allowed. (boolean, optional)
+  - `allow_update_branch`: Whether pull request head branches can be updated when behind the base branch. (boolean, optional)
+  - `archived`: Whether the repository should be archived. (boolean, optional)
+  - `default_branch`: New default branch name. The branch must already exist. (string, optional)
+  - `delete_branch_on_merge`: Whether head branches are automatically deleted after pull requests merge. (boolean, optional)
+  - `description`: New repository description. Use an empty string to clear it. (string, optional)
+  - `has_issues`: Whether GitHub Issues are enabled. (boolean, optional)
+  - `has_projects`: Whether GitHub Projects are enabled. (boolean, optional)
+  - `has_wiki`: Whether the repository wiki is enabled. (boolean, optional)
+  - `homepage`: New repository homepage URL. Use an empty string to clear it. (string, optional)
+  - `is_template`: Whether the repository is available as a template repository. (boolean, optional)
+  - `name`: New repository name. Providing this renames the repository. (string, optional)
+  - `owner`: Repository owner (username or organization) (string, required)
+  - `private`: Whether the repository should be private. (boolean, optional)
+  - `repo`: Current repository name (string, required)
 
 </details>
 
