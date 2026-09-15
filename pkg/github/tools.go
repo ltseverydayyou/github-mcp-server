@@ -393,7 +393,7 @@ func ToBoolPtr(b bool) *bool {
 	return &b
 }
 
-// ToStringPtr converts a bool to a *bool pointer.
+// ToStringPtr converts a string to a *string pointer.
 // Returns nil if the string is empty.
 func ToStringPtr(s string) *string {
 	if s == "" {
@@ -487,7 +487,7 @@ func AddDefaultToolset(result []string) []string {
 
 	result = RemoveToolset(result, string(ToolsetMetadataDefault.ID))
 
-	// Get default toolset IDs from metadata
+	// Get default toolset IDs from the Inventory
 	// Build() can only fail if WithTools specifies invalid tools - not used here
 	r, _ := NewInventory(stubTranslator).Build()
 	for _, id := range r.DefaultToolsetIDs() {
@@ -517,6 +517,8 @@ func ContainsToolset(tools []string, toCheck string) bool {
 func CleanTools(toolNames []string) []string {
 	seen := make(map[string]bool)
 	result := make([]string, 0, len(toolNames))
+
+	// Remove duplicates and trim whitespace
 	for _, tool := range toolNames {
 		trimmed := strings.TrimSpace(tool)
 		if trimmed == "" {
@@ -527,6 +529,7 @@ func CleanTools(toolNames []string) []string {
 			result = append(result, trimmed)
 		}
 	}
+
 	return result
 }
 

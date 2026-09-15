@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
+	"net"
+	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	ghErrors "github.com/github/github-mcp-server/pkg/errors"
 	"github.com/github/github-mcp-server/pkg/inventory"
@@ -18,38 +20,184 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const maxChatGPTRepositoryFileBytes int64 = 100 << 20
+
 func generateReposToolsetInstructions(_ *inventory.Inventory) string {
 	return `## Repository files
 
-When a file already exists in the ChatGPT sandbox (normally /mnt/data), prefer github_repository_file_upload to create or replace it in a repository without copying the full contents into MCP arguments. This is especially important for large files. Do not create a GitHub Actions workflow merely to transfer or update a sandbox file when github_repository_file_upload can perform the update directly.
+When a ChatGPT attachment, generated artifact, or sandbox file must be created or replaced in a repository, prefer github_repository_file_upload. Pass the local sandbox file to its file parameter; ChatGPT supplies the actual file through openai/fileParams. Do not create a GitHub Actions workflow merely to transport or update file bytes when this tool is available.
 
-When complete repository file contents are needed locally, especially for files too large or awkward for get_file_contents, prefer github_file_download to place the full file in /mnt/data for inspection.`
+When complete repository file bytes are needed for local inspection, especially for a large file, prefer github_file_download. It returns an MCP resource link that lets the host materialize the whole file without placing its contents in model context.`
 }
 
-// RepositoryFileUpload commits a ChatGPT sandbox file directly into a repository without sending its contents through MCP arguments.
+type chatGPTFileInput struct {
+	DownloadURL string
+	FileID      string
+	MIMEType    string
+	FileName    string
+}
+
+func chatGPTFileSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"download_url": {Type: "string", Description: "Temporary authorized HTTPS download URL supplied by ChatGPT."},
+			"file_id":      {Type: "string", Description: "ChatGPT file identifier."},
+			"mime_type":    {Type: "string", Description: "Optional MIME type supplied by ChatGPT."},
+			"file_name":    {Type: "string", Description: "Optional original file name supplied by ChatGPT."},
+		},
+		Required: []string{"download_url", "file_id"},
+	}
+}
+
+func parseChatGPTFileInput(args map[string]any, name string) (chatGPTFileInput, error) {
+	raw, ok := args[name]
+	if !ok || raw == nil {
+		return chatGPTFileInput{}, fmt.Errorf("missing required parameter: %s", name)
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return chatGPTFileInput{}, fmt.Errorf("%s must be the ChatGPT-provided file object", name)
+	}
+	stringField := func(key string) string {
+		value, _ := obj[key].(string)
+		return strings.TrimSpace(value)
+	}
+	file := chatGPTFileInput{
+		DownloadURL: stringField("download_url"),
+		FileID:      stringField("file_id"),
+		MIMEType:    stringField("mime_type"),
+		FileName:    stringField("file_name"),
+	}
+	if file.DownloadURL == "" {
+		return chatGPTFileInput{}, fmt.Errorf("%s.download_url is required", name)
+	}
+	if file.FileID == "" {
+		return chatGPTFileInput{}, fmt.Errorf("%s.file_id is required", name)
+	}
+	return file, nil
+}
+
+func unsafeDownloadIP(ip net.IP) bool {
+	return ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast()
+}
+
+func validateChatGPTDownloadURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ChatGPT file download URL: %w", err)
+	}
+	if u.Scheme != "https" || u.Hostname() == "" {
+		return nil, fmt.Errorf("ChatGPT file download URL must use HTTPS")
+	}
+	if u.User != nil {
+		return nil, fmt.Errorf("ChatGPT file download URL must not contain embedded credentials")
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil && unsafeDownloadIP(ip) {
+		return nil, fmt.Errorf("ChatGPT file download URL resolves to a non-public address")
+	}
+	return u, nil
+}
+
+func chatGPTFileHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("download host did not resolve")
+		}
+		for _, ip := range ips {
+			if unsafeDownloadIP(ip) {
+				return nil, fmt.Errorf("download host resolves to a non-public address")
+			}
+		}
+		var lastErr error
+		for _, ip := range ips {
+			conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, lastErr
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   2 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects while downloading ChatGPT file")
+			}
+			_, err := validateChatGPTDownloadURL(req.URL.String())
+			return err
+		},
+	}
+}
+
+func downloadChatGPTFile(ctx context.Context, rawURL string) ([]byte, error) {
+	u, err := validateChatGPTDownloadURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ChatGPT file request: %w", err)
+	}
+	resp, err := chatGPTFileHTTPClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download ChatGPT file: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("ChatGPT file download returned HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > maxChatGPTRepositoryFileBytes {
+		return nil, fmt.Errorf("ChatGPT file is too large: maximum supported size is %d bytes", maxChatGPTRepositoryFileBytes)
+	}
+	content, err := io.ReadAll(io.LimitReader(resp.Body, maxChatGPTRepositoryFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read ChatGPT file: %w", err)
+	}
+	if int64(len(content)) > maxChatGPTRepositoryFileBytes {
+		return nil, fmt.Errorf("ChatGPT file is too large: maximum supported size is %d bytes", maxChatGPTRepositoryFileBytes)
+	}
+	return content, nil
+}
+
+// RepositoryFileUpload commits a ChatGPT-provided file directly into a repository.
 func RepositoryFileUpload(t translations.TranslationHelperFunc) inventory.ServerTool {
 	return NewTool(
 		ToolsetMetadataRepos,
 		mcp.Tool{
-			Name:        "github_repository_file_upload",
-			Description: t("TOOL_GITHUB_REPOSITORY_FILE_UPLOAD_DESCRIPTION", "Create or replace a repository file from a file in the ChatGPT sandbox. Reads the source directly from /mnt/data (or GITHUB_MCP_SANDBOX_ROOT), automatically resolves the existing blob SHA when needed, and avoids sending large file contents through MCP arguments."),
+			Meta: mcp.Meta{"openai/fileParams": []string{"file"}},
+			Name: "github_repository_file_upload",
+			Description: t("TOOL_GITHUB_REPOSITORY_FILE_UPLOAD_DESCRIPTION", "Create or replace a repository file from a ChatGPT attachment, generated artifact, or sandbox file without sending the file contents through model context. ChatGPT injects the file parameter through openai/fileParams; pass the local /mnt/data file to that parameter rather than a pathname string. The tool automatically resolves the existing target SHA when updating."),
 			Annotations: &mcp.ToolAnnotations{
-				Title:           t("TOOL_GITHUB_REPOSITORY_FILE_UPLOAD_USER_TITLE", "Commit sandbox file to repository"),
+				Title:           t("TOOL_GITHUB_REPOSITORY_FILE_UPLOAD_USER_TITLE", "Commit ChatGPT file to repository"),
 				ReadOnlyHint:    false,
 				DestructiveHint: jsonschema.Ptr(true),
 			},
 			InputSchema: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
-					"owner":     {Type: "string", Description: "Repository owner."},
-					"repo":      {Type: "string", Description: "Repository name."},
-					"path":      {Type: "string", Description: "Repository path to create or replace."},
-					"file_path": {Type: "string", Description: "Source file in the ChatGPT sandbox, normally /mnt/data/<file>."},
-					"message":   {Type: "string", Description: "Commit message."},
-					"branch":    {Type: "string", Description: "Branch to update. Omit to use the repository default branch."},
-					"sha":       {Type: "string", Description: "Optional expected blob SHA for an existing target. When omitted, the tool detects the current SHA automatically."},
+					"owner":   {Type: "string", Description: "Repository owner."},
+					"repo":    {Type: "string", Description: "Repository name."},
+					"path":    {Type: "string", Description: "Repository path to create or replace."},
+					"file":    chatGPTFileSchema(),
+					"message": {Type: "string", Description: "Commit message."},
+					"branch":  {Type: "string", Description: "Branch to update. Omit to use the repository default branch."},
+					"sha":     {Type: "string", Description: "Optional expected blob SHA for an existing target. When omitted, the current SHA is detected automatically."},
 				},
-				Required: []string{"owner", "repo", "path", "file_path", "message"},
+				Required: []string{"owner", "repo", "path", "file", "message"},
 			},
 		},
 		scopes.RequireAll(scopes.Repo),
@@ -66,11 +214,11 @@ func RepositoryFileUpload(t translations.TranslationHelperFunc) inventory.Server
 			if err != nil {
 				return utils.NewToolResultError(err.Error()), nil, nil
 			}
-			filePath, err := RequiredParam[string](args, "file_path")
+			message, err := RequiredParam[string](args, "message")
 			if err != nil {
 				return utils.NewToolResultError(err.Error()), nil, nil
 			}
-			message, err := RequiredParam[string](args, "message")
+			file, err := parseChatGPTFileInput(args, "file")
 			if err != nil {
 				return utils.NewToolResultError(err.Error()), nil, nil
 			}
@@ -81,13 +229,9 @@ func RepositoryFileUpload(t translations.TranslationHelperFunc) inventory.Server
 				return utils.NewToolResultError("message must not be empty"), nil, nil
 			}
 
-			filePath, err = resolveSandboxPath(filePath, true)
+			content, err := downloadChatGPTFile(ctx, file.DownloadURL)
 			if err != nil {
 				return utils.NewToolResultError(err.Error()), nil, nil
-			}
-			content, err := os.ReadFile(filePath)
-			if err != nil {
-				return utils.NewToolResultErrorFromErr("failed to read sandbox file", err), nil, nil
 			}
 
 			branch, _ := OptionalParam[string](args, "branch")
@@ -98,29 +242,24 @@ func RepositoryFileUpload(t translations.TranslationHelperFunc) inventory.Server
 			}
 
 			if targetSHA == "" {
-				getOpts := &github.RepositoryContentGetOptions{Ref: branch}
-				existing, directory, resp, getErr := client.Repositories.GetContents(ctx, owner, repo, repoPath, getOpts)
+				existing, directory, resp, getErr := client.Repositories.GetContents(ctx, owner, repo, repoPath, &github.RepositoryContentGetOptions{Ref: branch})
 				if getErr == nil {
 					defer closeGitHubResponse(resp)
 					if existing == nil || directory != nil {
 						return utils.NewToolResultError("path resolves to a directory, not a file"), nil, nil
 					}
 					targetSHA = existing.GetSHA()
-				} else if resp == nil || resp.StatusCode != 404 {
+				} else if resp == nil || resp.StatusCode != http.StatusNotFound {
 					return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to inspect repository target", resp, getErr), nil, nil
 				} else {
 					closeGitHubResponse(resp)
 				}
 			}
 
-			opts := &github.RepositoryContentFileOptions{
-				Message: github.Ptr(message),
-				Content: content,
-			}
+			opts := &github.RepositoryContentFileOptions{Message: github.Ptr(message), Content: content}
 			if branch != "" {
 				opts.Branch = github.Ptr(branch)
 			}
-
 			var result *github.RepositoryContentResponse
 			var resp *github.Response
 			if targetSHA != "" {
@@ -130,38 +269,39 @@ func RepositoryFileUpload(t translations.TranslationHelperFunc) inventory.Server
 				result, resp, err = client.Repositories.CreateFile(ctx, owner, repo, repoPath, opts)
 			}
 			if err != nil {
-				return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to commit sandbox file", resp, err), nil, nil
+				return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to commit ChatGPT file", resp, err), nil, nil
 			}
 			defer closeGitHubResponse(resp)
 			return marshalWriteResult(map[string]any{
-				"result":      result,
-				"source_path": filePath,
-				"bytes":       len(content),
+				"result":    result,
+				"file_id":   file.FileID,
+				"file_name": file.FileName,
+				"mime_type": file.MIMEType,
+				"bytes":     len(content),
 			})
 		},
 	)
 }
 
-// FileDownload downloads the complete contents of a GitHub repository file into the ChatGPT sandbox.
+// FileDownload returns a complete repository file as an MCP resource link for host-side materialization.
 func FileDownload(t translations.TranslationHelperFunc) inventory.ServerTool {
 	return NewTool(
 		ToolsetMetadataRepos,
 		mcp.Tool{
 			Name:        "github_file_download",
-			Description: t("TOOL_GITHUB_FILE_DOWNLOAD_DESCRIPTION", "Download the complete bytes of a repository file into the ChatGPT sandbox for local inspection. This is useful when get_file_contents is truncated or unsuitable for very large files."),
+			Description: t("TOOL_GITHUB_FILE_DOWNLOAD_DESCRIPTION", "Return a complete repository file as an MCP resource link so the host can materialize or download the full bytes without putting large source content in model context. Prefer this when get_file_contents is too large or when the whole file is needed for local inspection."),
 			Annotations: &mcp.ToolAnnotations{
-				Title:        t("TOOL_GITHUB_FILE_DOWNLOAD_USER_TITLE", "Download repository file"),
+				Title:        t("TOOL_GITHUB_FILE_DOWNLOAD_USER_TITLE", "Download complete repository file"),
 				ReadOnlyHint: true,
 			},
 			InputSchema: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
-					"owner":            {Type: "string", Description: "Repository owner."},
-					"repo":             {Type: "string", Description: "Repository name."},
-					"path":             {Type: "string", Description: "Repository file path to download."},
-					"ref":              {Type: "string", Description: "Optional branch, tag, or commit SHA."},
-					"destination_path": {Type: "string", Description: "Optional destination inside /mnt/data. Defaults to /mnt/data/<source basename>."},
-					"overwrite":        {Type: "boolean", Description: "Allow replacing an existing sandbox file. Defaults to false."},
+					"owner": {Type: "string", Description: "Repository owner."},
+					"repo":  {Type: "string", Description: "Repository name."},
+					"path":  {Type: "string", Description: "Repository file path to download."},
+					"ref":   {Type: "string", Description: "Optional git ref such as a branch, tag, or refs/pull/<number>/head."},
+					"sha":   {Type: "string", Description: "Optional commit SHA. Takes precedence over ref."},
 				},
 				Required: []string{"owner", "repo", "path"},
 			},
@@ -181,129 +321,45 @@ func FileDownload(t translations.TranslationHelperFunc) inventory.ServerTool {
 				return utils.NewToolResultError(err.Error()), nil, nil
 			}
 			ref, _ := OptionalParam[string](args, "ref")
-			overwrite, _ := OptionalParam[bool](args, "overwrite")
-			destination, _ := OptionalParam[string](args, "destination_path")
-			if destination == "" {
-				base := filepath.Base(strings.TrimSpace(repoPath))
-				if base == "." || base == "/" || base == "" {
-					return utils.NewToolResultError("path must point to a repository file"), nil, nil
-				}
-				destination = filepath.Join(sandboxRoot(), base)
-			}
-			destination, err = resolveSandboxDestination(destination)
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
-			}
-			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-				return utils.NewToolResultErrorFromErr("failed to create sandbox destination directory", err), nil, nil
+			sha, _ := OptionalParam[string](args, "sha")
+			if strings.TrimSpace(repoPath) == "" || strings.HasSuffix(repoPath, "/") {
+				return utils.NewToolResultError("path must point to a repository file"), nil, nil
 			}
 
 			client, err := deps.GetClient(ctx)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to get GitHub client: %w", err)
 			}
-			reader, resp, err := client.Repositories.DownloadContents(ctx, owner, repo, repoPath, &github.RepositoryContentGetOptions{Ref: ref})
+			rawOpts, _, err := resolveGitReference(ctx, client, owner, repo, ref, sha)
 			if err != nil {
-				return utils.NewToolResultErrorFromErr("failed to download repository file", err), nil, nil
+				return utils.NewToolResultError(fmt.Sprintf("failed to resolve git reference: %s", err)), nil, nil
 			}
-			defer reader.Close()
+			resolvedRef := ref
+			if rawOpts.SHA != "" {
+				resolvedRef = rawOpts.SHA
+			}
+			fileContent, dirContent, resp, err := client.Repositories.GetContents(ctx, owner, repo, repoPath, &github.RepositoryContentGetOptions{Ref: resolvedRef})
+			if err != nil {
+				return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to inspect repository file", resp, err), nil, nil
+			}
 			defer closeGitHubResponse(resp)
+			if fileContent == nil || dirContent != nil {
+				return utils.NewToolResultError("path resolves to a directory, not a file"), nil, nil
+			}
 
-			flags := os.O_WRONLY | os.O_CREATE
-			if overwrite {
-				flags |= os.O_TRUNC
-			} else {
-				flags |= os.O_EXCL
-			}
-			out, err := os.OpenFile(destination, flags, 0o644)
+			resourceURI, err := expandRepoResourceURI(owner, repo, sha, resolvedRef, strings.Split(strings.Trim(repoPath, "/"), "/"))
 			if err != nil {
-				if os.IsExist(err) && !overwrite {
-					return utils.NewToolResultError("destination_path already exists; set overwrite=true or choose another path"), nil, nil
-				}
-				return utils.NewToolResultErrorFromErr("failed to open sandbox destination", err), nil, nil
+				return utils.NewToolResultError("failed to build repository resource URI"), nil, nil
 			}
-			written, copyErr := io.Copy(out, reader)
-			closeErr := out.Close()
-			if copyErr != nil {
-				_ = os.Remove(destination)
-				return utils.NewToolResultErrorFromErr("failed to write downloaded file", copyErr), nil, nil
+			size := int64(fileContent.GetSize())
+			resource := &mcp.ResourceLink{
+				URI:   resourceURI,
+				Name:  fileContent.GetName(),
+				Title: fmt.Sprintf("File: %s", repoPath),
+				Size:  &size,
 			}
-			if closeErr != nil {
-				return utils.NewToolResultErrorFromErr("failed to close downloaded file", closeErr), nil, nil
-			}
-			return marshalWriteResult(map[string]any{
-				"destination_path": destination,
-				"bytes":            written,
-				"owner":            owner,
-				"repo":             repo,
-				"path":             repoPath,
-				"ref":              ref,
-			})
+			message := fmt.Sprintf("Complete repository file available as a downloadable MCP resource (%d bytes, blob %s).", size, fileContent.GetSHA())
+			return utils.NewToolResultResourceLink(message, resource), nil, nil
 		},
 	)
-}
-
-func sandboxRoot() string {
-	if root := strings.TrimSpace(os.Getenv("GITHUB_MCP_SANDBOX_ROOT")); root != "" {
-		return filepath.Clean(root)
-	}
-	return filepath.Clean("/mnt/data")
-}
-
-func pathWithinRoot(root, candidate string) bool {
-	rel, err := filepath.Rel(root, candidate)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
-}
-
-func resolveSandboxPath(path string, requireRegular bool) (string, error) {
-	if strings.Contains(path, "://") || !filepath.IsAbs(path) {
-		return "", fmt.Errorf("file_path must be an absolute path inside %s", sandboxRoot())
-	}
-	root, err := filepath.Abs(sandboxRoot())
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve sandbox root: %w", err)
-	}
-	candidate, err := filepath.Abs(filepath.Clean(path))
-	if err != nil || !pathWithinRoot(root, candidate) {
-		return "", fmt.Errorf("file_path must stay inside %s", root)
-	}
-	resolvedRoot, rootErr := filepath.EvalSymlinks(root)
-	resolved, pathErr := filepath.EvalSymlinks(candidate)
-	if rootErr == nil && pathErr == nil && !pathWithinRoot(resolvedRoot, resolved) {
-		return "", fmt.Errorf("file_path resolves outside %s", root)
-	}
-	if requireRegular {
-		info, err := os.Stat(candidate)
-		if err != nil {
-			return "", fmt.Errorf("failed to stat file_path: %w", err)
-		}
-		if !info.Mode().IsRegular() {
-			return "", fmt.Errorf("file_path must point to a regular file")
-		}
-	}
-	return candidate, nil
-}
-
-func resolveSandboxDestination(path string) (string, error) {
-	if strings.Contains(path, "://") || !filepath.IsAbs(path) {
-		return "", fmt.Errorf("destination_path must be an absolute path inside %s", sandboxRoot())
-	}
-	root, err := filepath.Abs(sandboxRoot())
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve sandbox root: %w", err)
-	}
-	candidate, err := filepath.Abs(filepath.Clean(path))
-	if err != nil || !pathWithinRoot(root, candidate) {
-		return "", fmt.Errorf("destination_path must stay inside %s", root)
-	}
-	parent := filepath.Dir(candidate)
-	if resolvedRoot, rootErr := filepath.EvalSymlinks(root); rootErr == nil {
-		if resolvedParent, parentErr := filepath.EvalSymlinks(parent); parentErr == nil && !pathWithinRoot(resolvedRoot, resolvedParent) {
-			return "", fmt.Errorf("destination_path resolves outside %s", root)
-		}
-	}
-	if info, err := os.Lstat(candidate); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("destination_path must not be a symbolic link")
-	}
-	return candidate, nil
 }
