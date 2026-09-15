@@ -5,7 +5,7 @@
 [![GitHub license](https://img.shields.io/github/license/github/github-mcp-server)](https://github.com/github/github-mcp-server/blob/main/LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/github/github-mcp-server)
 
-The GitHub MCP Server connects AI tools directly to GitHub's platform. It enables AI tools, agents and assistants to read repositories and code, manage issues and pull requests, analyze code, monitor activity, and automate workflows—all through natural language interactions.
+The GitHub MCP Server is a Model Context Protocol (MCP) server that provides seamless integration with GitHub APIs, enabling advanced automation and interaction capabilities for developers and tools.
 
 ### Use Cases
 
@@ -21,16 +21,16 @@ Designed for developers who want to connect their AI tools to GitHub context and
 
 ## Remote GitHub MCP Server
 
-[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=github&config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fapi.githubcopilot.com%2Fmcp%2F%22%7D) [![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=github&config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%2F%2Fapi.githubcopilot.com%2Fmcp%2F%22%7D&quality=insiders)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=github&config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fapi.githubcopilot.com%2Fmcp%2F%22%7D) [![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=github&config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fapi.githubcopilot.com%2Fmcp%2F%22%7D&quality=insiders)
 
 The remote GitHub MCP server is hosted by GitHub and is the easiest way to get up and running. If your MCP host does not support remote MCP servers, you can use the [local GitHub MCP server](#local-github-mcp-server) instead.
 
 ### Prerequisites
 
 1. A compatible MCP host with remote server support (VS Code 1.101+, Copilot in other IDEs, Claude Desktop, Claude Code, Cursor, Windsurf, etc.)
-2. Any relevant [policies enabled](https://docs.github.com/en/copilot/how-tos/administer-copilot/manage-for-organization/manage-policies#configuring-mcp-server-access) 
+2. Any relevant [policies enabled](https://docs.github.com/en/copilot/how-tos/administer-copilot/manage-for-organization/manage-policies#configuring-mcp-server-access)
 
-### Configure in VS Code 
+### Configure in VS Code
 
 For more information about configuring MCP servers in VS Code, see the [official VS Code documentation](https://code.visualstudio.com/docs/copilot/chat/mcp-servers).
 
@@ -259,10 +259,8 @@ The following sets of tools are available:
   - `get_release_by_tag`
   - `get_tag`
   - `github_api`
-  - `github_file_download`
   - `github_file_upload`
   - `github_graphql`
-  - `github_repository_file_upload`
   - `list_branches`
   - `list_commits`
   - `list_releases`
@@ -333,7 +331,7 @@ The following sets of tools are available:
   - `ref`: The git reference for the workflow. The reference can be a branch or tag name. Required for 'run_workflow' method. (string, optional)
   - `repo`: Repository name (string, required)
   - `run_id`: The ID of the workflow run. Required for all methods except 'run_workflow'. (number, optional)
-  - `workflow_id`: The workflow ID (numeric) or workflow file name (e.g. main.yml, ci.yaml). Required for 'run_workflow' method. (string, optional)
+  - `workflow_id`: The workflow ID (numeric) or workflow file name (e.g., main.yml, ci.yaml). Required for 'run_workflow' method. (string, optional)
 
 - **add_comment_to_pending_review** - Add comment to pending review
   - **OAuth Challenge Scopes**: `repo`
@@ -488,8 +486,8 @@ Options are:
   - **OAuth Challenge Scopes**: `repo`
   - `detail`: Level of detail to include for changed files. "none" omits stats and files entirely. "stats" (default) includes per-file metadata: filename, status, and lines-of-code counts (additions, deletions, changes), with no patch content. "full_patch" additionally includes the unified diff content for each file and can be very large. (string, optional)
   - `owner`: Repository owner (string, required)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `repo`: Repository name (string, required)
   - `sha`: Commit SHA, branch name, or tag name (string, required)
 
@@ -511,7 +509,7 @@ Options are:
   - `discussionNumber`: Discussion Number (number, required)
   - `includeReplies`: When true, each top-level comment will include its replies nested within it (up to 100 replies per comment, which is the GitHub API maximum). Defaults to false. (boolean, optional)
   - `owner`: Repository owner (string, required)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `repo`: Repository name (string, required)
 
 - **get_file_blame** - Get file blame information
@@ -541,7 +539,7 @@ Options are:
   - `owner`: Repository owner (string, required)
   - `repo`: Repository name (string, required)
   - `return_content`: Returns actual log content instead of URLs (boolean, optional)
-  - `run_id`: The unique identifier of the workflow run. Required when failed_only is true to get logs for all failed jobs in a workflow run. (number, optional)
+  - `run_id`: The unique identifier of the workflow run. Required when failed_only is true to get logs for all failed jobs in the run. (number, optional)
   - `tail_lines`: Number of lines to return from the end of the log (number, optional)
 
 - **get_label** - Get label
@@ -608,7 +606,7 @@ Options are:
 - **github_repository_file_upload** - Commit ChatGPT file to repository
   - **OAuth Challenge Scopes**: `repo`
   - `branch`: Branch to update. Omit to use the repository default branch. (string, optional)
-  - `file`:  (object, required)
+  - `file`: ChatGPT-provided file object. Pass a local sandbox file to this parameter; ChatGPT supplies the authorized file reference. (object, required)
   - `message`: Commit message. (string, required)
   - `owner`: Repository owner. (string, required)
   - `path`: Repository path to create or replace. (string, required)
@@ -618,8 +616,8 @@ Options are:
 - **list_branches** - List branches
   - **OAuth Challenge Scopes**: `repo`
   - `owner`: Repository owner (string, required)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `repo`: Repository name (string, required)
 
 - **list_commits** - List commits
@@ -627,42 +625,42 @@ Options are:
   - `author`: Author username or email address to filter commits by (string, optional)
   - `fields`: Subset of fields to return for each commit. If omitted, all fields are returned. Use this to reduce response size when you only need specific fields, e.g. just 'sha' and 'html_url'. (string[], optional)
   - `owner`: Repository owner (string, required)
-  - `page`: Page number for pagination (min 1) (number, optional)
+  - `page`: Page number for pagination (min 1)
   - `path`: Only commits containing this file path will be returned (string, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `repo`: Repository name (string, required)
   - `sha`: Commit SHA, branch or tag name to list commits of. If not provided, uses the default branch of the repository. If a commit SHA is provided, will list commits up to that SHA. (string, optional)
   - `since`: Only commits after this date will be returned (ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD) (string, optional)
-  - `until`: Only commits before this date (ISO 8601 timestamp) (string, optional)
+  - `until`: Only commits before this date will be returned (ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD) (string, optional)
 
 - **list_releases** - List releases
   - **OAuth Challenge Scopes**: `repo`
   - `fields`: Subset of fields to return for each release. If omitted, all fields are returned. Use this to reduce response size when you only need specific fields; omitting 'body' in particular drops the largest per-release data. (string[], optional)
   - `owner`: Repository owner (string, required)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `repo`: Repository name (string, required)
 
 - **list_repository_collaborators** - List repository collaborators
   - **OAuth Challenge Scopes**: `repo`
   - `affiliation`: Filter by affiliation. Can be one of: 'outside' (outside collaborators), 'direct' (all with permissions regardless of org membership), 'all' (all collaborators). Default: 'all' (string, optional)
   - `owner`: Repository owner (string, required)
-  - `page`: Page number for pagination (default 1, min 1) (number, optional)
-  - `perPage`: Results per page for pagination (default 30, min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (default 1, min 1)
+  - `perPage`: Results per page for pagination (default 30, min 1, max 100)
   - `repo`: Repository name (string, required)
 
 - **list_starred_repositories** - List starred repositories
   - `direction`: The direction to sort the results by. (string, optional)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `sort`: How to sort the results. Can be either 'created' (when the repository was starred) or 'updated' (when the repository was last pushed to). (string, optional)
   - `username`: Username to list starred repositories for. Defaults to the authenticated user. (string, optional)
 
 - **list_tags** - List tags
   - **OAuth Challenge Scopes**: `repo`
   - `owner`: Repository owner (string, required)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `repo`: Repository name (string, required)
 
 - **manage_notification_subscription** - Manage notification subscription
@@ -757,12 +755,12 @@ Possible options:
 4. get_files - Get the list of files changed in a pull request. Use with pagination parameters to control the number of results returned.
 5. get_commits - Get the list of commits on a pull request. Use with pagination parameters to control the number of results returned.
 6. get_review_comments - Get review threads on a pull request. Each thread contains logically grouped review comments made on the same code location during pull request reviews. Returns threads with metadata (isResolved, isOutdated, isCollapsed) and their associated comments. Use cursor-based pagination (perPage, after) to control results.
-7. get_reviews - Get the reviews on a pull request. When asked for review comments, use get_review_comments method. Use with pagination parameters to control results.
-8. get_comments - Get comments on a pull request. Use this if user doesn't specifically want review comments. Use with pagination parameters to control results.
+7. get_reviews - Get the reviews on a pull request. When asked for review comments, use get_review_comments method. Use with pagination parameters to control the number of results returned.
+8. get_comments - Get comments on a pull request. Use this if user doesn't specifically want review comments. Use with pagination parameters to control the number of results returned.
 9. get_check_runs - Get check runs for the head commit of a pull request. Check runs are the individual CI/CD jobs and checks that run on the PR. (string, required)
   - `owner`: Repository owner (string, required)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `pullNumber`: Pull request number (number, required)
   - `repo`: Repository name (string, required)
 
@@ -775,7 +773,7 @@ Possible options:
   - `owner`: Repository owner (string, required)
   - `pullNumber`: Pull request number (number, required)
   - `repo`: Repository name (string, required)
-  - `threadId`: The node ID of the review thread (e.g. PRRT_kwDOxxx). Required for resolve_thread and unresolve_thread methods. Get thread IDs from pull_request_read with method get_review_comments. (string, optional)
+  - `threadId`: The node ID of the review thread (e.g., PRRT_kwDOxxx). Required for resolve_thread and unresolve_thread methods. Get thread IDs from pull_request_read with method get_review_comments. (string, optional)
 
 - **push_files** - Push multiple files
   - **OAuth Challenge Scopes**: `repo`
@@ -817,16 +815,16 @@ Possible options:
   - **OAuth Challenge Scopes**: `repo`
   - `fields`: Subset of fields to return for each code search result. If omitted, all fields are returned. Use this to reduce response size when you only need specific fields; omitting 'repository' and 'text_matches' in particular drops the largest per-result data. (string[], optional)
   - `order`: Sort order for results (string, optional)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `query`: Search query (GitHub code search REST). Implicit AND between terms; supports `OR`, `NOT`, and `"quoted phrase"` for exact match. Qualifiers: `repo:owner/repo`, `org:`, `user:`, `language:`, `path:dir` (prefix match), `filename:exact.ext`, `extension:`, `in:file`, `in:path`, `size:`, `is:archived`, `is:fork`. Max 256 chars. Examples: `WithContext language:go org:github`; `"package main" repo:o/r`; `func extension:go path:cmd repo:o/r`; `NOT TODO language:go repo:o/r`. (string, required)
   - `sort`: Sort field ('indexed' only) (string, optional)
 
 - **search_commits** - Search commits
   - **OAuth Challenge Scopes**: `repo`
-  - `order`: Sort order (string, optional)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `order`: Sort order for results (string, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `query`: Commit search query (GitHub commit search REST). Searches commit messages on the default branch only. Scope the search with `repo:owner/repo`, `org:`, or `user:` (queries without a scope qualifier match across all of GitHub and are usually not what you want). Other qualifiers: `author:`, `committer:`, `author-name:`, `committer-name:`, `author-email:`, `committer-email:`, `author-date:`, `committer-date:` (supports `>`, `<`, `>=`, `<=`, and `YYYY-MM-DD..YYYY-MM-DD` ranges), `merge:true|false`, `hash:`, `tree:`, `parent:`, `is:public`. Examples: `repo:owner/repo fix panic`; `org:github author:defunkt committer-date:>=2024-01-01`; `"refactor cache" repo:o/r`; `hash:abc1234 repo:o/r`. (string, required)
   - `sort`: Sort by author or committer date (defaults to best match) (string, optional)
 
@@ -835,16 +833,16 @@ Possible options:
   - `fields`: Subset of fields to return for each issue result. If omitted, all fields are returned. Use this to reduce response size when you only need specific fields; omitting 'body', 'reactions', and 'labels' in particular drops the largest per-result data. (string[], optional)
   - `order`: Sort order (string, optional)
   - `owner`: Optional repository owner. If provided with repo, only issues for this repository are listed. (string, optional)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `query`: The search query, as natural language. When the user gives alternative wordings, include them as plain words rather than joining them with OR. (string, required)
   - `repo`: Optional repository name. If provided with owner, only issues for this repository are listed. (string, optional)
   - `sort`: Sort field by number of matches of categories, defaults to best match (string, optional)
 
 - **search_orgs** - Search organizations
   - `order`: Sort order (string, optional)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `query`: Organization search query. Examples: 'microsoft', 'location:california', 'created:>=2025-01-01'. Search is automatically scoped to type:org. (string, required)
   - `sort`: Sort field by category (string, optional)
 
@@ -853,8 +851,8 @@ Possible options:
   - `fields`: Subset of fields to return for each pull request result. If omitted, all fields are returned. Use this to reduce response size when you only need specific fields; omitting 'body', 'reactions', and 'labels' in particular drops the largest per-result data. (string[], optional)
   - `order`: Sort order (string, optional)
   - `owner`: Optional repository owner. If provided with repo, only pull requests for this repository are listed. (string, optional)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `query`: Search query using GitHub pull request search syntax (string, required)
   - `repo`: Optional repository name. If provided with owner, only pull requests for this repository are listed. (string, optional)
   - `sort`: Sort field by number of matches of categories, defaults to best match (string, optional)
@@ -862,15 +860,15 @@ Possible options:
 - **search_repositories** - Search repositories
   - `minimal_output`: Return minimal repository information (default: true). When false, returns full GitHub API repository objects. (boolean, optional)
   - `order`: Sort order (string, optional)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `query`: Repository search query. Examples: 'machine learning in:name stars:>1000 language:python', 'topic:react', 'user:facebook'. Supports advanced search syntax for precise filtering. (string, required)
   - `sort`: Sort repositories by field, defaults to best match (string, optional)
 
 - **search_users** - Search users
   - `order`: Sort order (string, optional)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 1)
+  - `perPage`: Results per page for pagination (min 1, max 100)
   - `query`: User search query. Examples: 'john smith', 'location:seattle', 'followers:>100'. Search is automatically scoped to type:user. (string, required)
   - `sort`: Sort users by number of followers or repositories, or when the person joined GitHub. (string, optional)
 

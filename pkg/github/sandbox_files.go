@@ -39,7 +39,8 @@ type chatGPTFileInput struct {
 
 func chatGPTFileSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{
-		Type: "object",
+		Type:        "object",
+		Description: "ChatGPT-provided file object. Pass a local sandbox file to this parameter; ChatGPT supplies the authorized file reference.",
 		Properties: map[string]*jsonschema.Schema{
 			"download_url": {Type: "string", Description: "Temporary authorized HTTPS download URL supplied by ChatGPT."},
 			"file_id":      {Type: "string", Description: "ChatGPT file identifier."},
