@@ -243,15 +243,16 @@ func RepositoryFileUpload(t translations.TranslationHelperFunc) inventory.Server
 
 			if targetSHA == "" {
 				existing, directory, resp, getErr := client.Repositories.GetContents(ctx, owner, repo, repoPath, &github.RepositoryContentGetOptions{Ref: branch})
-				if getErr == nil {
+				switch {
+				case getErr == nil:
 					defer closeGitHubResponse(resp)
 					if existing == nil || directory != nil {
 						return utils.NewToolResultError("path resolves to a directory, not a file"), nil, nil
 					}
 					targetSHA = existing.GetSHA()
-				} else if resp == nil || resp.StatusCode != http.StatusNotFound {
+				case resp == nil || resp.StatusCode != http.StatusNotFound:
 					return ghErrors.NewGitHubAPIErrorResponse(ctx, "failed to inspect repository target", resp, getErr), nil, nil
-				} else {
+				default:
 					closeGitHubResponse(resp)
 				}
 			}
