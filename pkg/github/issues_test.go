@@ -1833,7 +1833,7 @@ func Test_CreateIssue(t *testing.T) {
 	serverTool := IssueWrite(translations.NullTranslationHelper)
 	tool := serverTool.Tool
 	require.NoError(t, toolsnaps.Test(tool.Name, tool))
-	require.Empty(t, serverTool.FeatureFlagEnable)
+	require.Equal(t, []inventory.FeatureFlag{inventory.FeatureFlag(FeatureFlagIssuesGranular)}, serverTool.FeatureRule.Features())
 
 	assert.Equal(t, "issue_write", tool.Name)
 	assert.NotEmpty(t, tool.Description)
@@ -2086,6 +2086,112 @@ func Test_CreateIssue(t *testing.T) {
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.expectedIssue.GetHTMLURL(), returnedIssue.URL)
+		})
+	}
+}
+
+func TestIssueWriteReportsUnappliedLabels(t *testing.T) {
+	tests := []struct {
+		name               string
+		method             string
+		requestedLabels    []string
+		appliedLabels      []string
+		expectedMissing    string
+		expectedUnexpected string
+	}{
+		{
+			name:               "create reports partially applied labels",
+			method:             "create",
+			requestedLabels:    []string{"bug", "enhancement"},
+			appliedLabels:      []string{"bug"},
+			expectedMissing:    `missing=["enhancement"]`,
+			expectedUnexpected: "unexpected=[]",
+		},
+		{
+			name:               "update reports silently dropped labels",
+			method:             "update",
+			requestedLabels:    []string{"enhancement"},
+			appliedLabels:      []string{"existing"},
+			expectedMissing:    `missing=["enhancement"]`,
+			expectedUnexpected: `unexpected=["existing"]`,
+		},
+		{
+			name:               "update reports labels that were not cleared",
+			method:             "update",
+			requestedLabels:    []string{},
+			appliedLabels:      []string{"existing"},
+			expectedMissing:    "missing=[]",
+			expectedUnexpected: `unexpected=["existing"]`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			responseLabels := make([]*github.Label, 0, len(tc.appliedLabels))
+			for _, label := range tc.appliedLabels {
+				responseLabels = append(responseLabels, &github.Label{Name: label})
+			}
+			responseIssue := &github.Issue{
+				ID:      github.Ptr(int64(123)),
+				Number:  github.Ptr(123),
+				HTMLURL: github.Ptr("https://github.com/owner/repo/issues/123"),
+				Labels:  responseLabels,
+			}
+
+			endpoint := PostReposIssuesByOwnerByRepo
+			status := http.StatusCreated
+			if tc.method == "update" {
+				endpoint = PatchReposIssuesByOwnerByRepoByIssueNumber
+				status = http.StatusOK
+			}
+			restHTTPClient := MockHTTPClientWithHandlers(map[string]http.HandlerFunc{
+				endpoint: mockResponse(t, status, responseIssue),
+			})
+			restRequests := &requestCountingTransport{inner: restHTTPClient.Transport}
+			restHTTPClient.Transport = restRequests
+
+			gqlHTTPClient := githubv4mock.NewMockedHTTPClient()
+			gqlRequests := &requestCountingTransport{inner: gqlHTTPClient.Transport}
+			gqlHTTPClient.Transport = gqlRequests
+
+			requestLabels := make([]any, len(tc.requestedLabels))
+			for i, label := range tc.requestedLabels {
+				requestLabels[i] = label
+			}
+			requestArgs := map[string]any{
+				"method": tc.method,
+				"owner":  "owner",
+				"repo":   "repo",
+				"labels": requestLabels,
+			}
+			if tc.method == "create" {
+				requestArgs["title"] = "Test issue"
+			} else {
+				requestArgs["issue_number"] = float64(123)
+			}
+
+			deps := BaseDeps{
+				Client:    mustNewGHClient(t, restHTTPClient),
+				GQLClient: githubv4.NewClient(gqlHTTPClient),
+			}
+			serverTool := IssueWrite(translations.NullTranslationHelper)
+			handler := serverTool.Handler(deps)
+			request := createMCPRequest(requestArgs)
+
+			result, err := handler(ContextWithDeps(context.Background(), deps), &request)
+			require.NoError(t, err)
+			require.True(t, result.IsError)
+			assert.Equal(t, 1, restRequests.count, "label verification must use the write response without a readback")
+			assert.Zero(t, gqlRequests.count, "label verification must not make a GraphQL readback")
+
+			resultText := getErrorResult(t, result).Text
+			assert.Contains(t, resultText, "issue "+tc.method+"d but requested labels were not fully applied")
+			assert.Contains(t, resultText, fmt.Sprintf("requested=%q", tc.requestedLabels))
+			assert.Contains(t, resultText, fmt.Sprintf("applied=%q", tc.appliedLabels))
+			assert.Contains(t, resultText, tc.expectedMissing)
+			assert.Contains(t, resultText, tc.expectedUnexpected)
+			assert.Contains(t, resultText, `issue_url="https://github.com/owner/repo/issues/123"`)
+			assert.Contains(t, resultText, "AddLabelsToLabelable permission")
 		})
 	}
 }
@@ -5668,8 +5774,8 @@ func Test_AddSubIssue(t *testing.T) {
 	// Setup mock issue for success case (matches GitHub API response format)
 	mockIssue := &github.Issue{
 		Number:  github.Ptr(42),
-		Title:   github.Ptr("Parent Issue"),
-		Body:    github.Ptr("This is the parent issue with a sub-issue"),
+		Title:   github.Ptr("<script>alert(1)</script>can't \"quote\" AT&T\u200B"),
+		Body:    github.Ptr("<script>alert(1)</script>This is **Markdown**\u200B"),
 		State:   github.Ptr("open"),
 		HTMLURL: github.Ptr("https://github.com/owner/repo/issues/42"),
 		User: &github.User{
@@ -5864,8 +5970,8 @@ func Test_AddSubIssue(t *testing.T) {
 			err = json.Unmarshal([]byte(textContent.Text), &returnedIssue)
 			require.NoError(t, err)
 			assert.Equal(t, *tc.expectedIssue.Number, *returnedIssue.Number)
-			assert.Equal(t, *tc.expectedIssue.Title, *returnedIssue.Title)
-			assert.Equal(t, *tc.expectedIssue.Body, *returnedIssue.Body)
+			assert.Equal(t, "can't \"quote\" AT&T", *returnedIssue.Title)
+			assert.Equal(t, "<script>alert(1)</script>This is **Markdown**", *returnedIssue.Body)
 			assert.Equal(t, *tc.expectedIssue.State, *returnedIssue.State)
 			assert.Equal(t, *tc.expectedIssue.HTMLURL, *returnedIssue.HTMLURL)
 			assert.Equal(t, *tc.expectedIssue.User.Login, *returnedIssue.User.Login)
@@ -5893,8 +5999,8 @@ func Test_GetSubIssues(t *testing.T) {
 	mockSubIssues := []*github.Issue{
 		{
 			Number:  github.Ptr(123),
-			Title:   github.Ptr("Sub-issue 1"),
-			Body:    github.Ptr("This is the first sub-issue"),
+			Title:   github.Ptr("<script>alert(1)</script>can't \"quote\" AT&T\u200B"),
+			Body:    github.Ptr("<script>alert(1)</script>This is **Markdown**\u200B"),
 			State:   github.Ptr("open"),
 			HTMLURL: github.Ptr("https://github.com/owner/repo/issues/123"),
 			User: &github.User{
@@ -6093,12 +6199,17 @@ func Test_GetSubIssues(t *testing.T) {
 			for i, subIssue := range returnedSubIssues {
 				if i < len(tc.expectedSubIssues) {
 					assert.Equal(t, *tc.expectedSubIssues[i].Number, *subIssue.Number)
-					assert.Equal(t, *tc.expectedSubIssues[i].Title, *subIssue.Title)
+					if i == 0 {
+						assert.Equal(t, "can't \"quote\" AT&T", *subIssue.Title)
+						assert.Equal(t, "<script>alert(1)</script>This is **Markdown**", *subIssue.Body)
+					} else {
+						assert.Equal(t, *tc.expectedSubIssues[i].Title, *subIssue.Title)
+					}
 					assert.Equal(t, *tc.expectedSubIssues[i].State, *subIssue.State)
 					assert.Equal(t, *tc.expectedSubIssues[i].HTMLURL, *subIssue.HTMLURL)
 					assert.Equal(t, *tc.expectedSubIssues[i].User.Login, *subIssue.User.Login)
 
-					if tc.expectedSubIssues[i].Body != nil {
+					if i != 0 && tc.expectedSubIssues[i].Body != nil {
 						assert.Equal(t, *tc.expectedSubIssues[i].Body, *subIssue.Body)
 					}
 				}
@@ -6528,6 +6639,195 @@ func TestAddIssueCommentHandler(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueCommentSchema(t *testing.T) {
+	t.Parallel()
+
+	tool := UpdateIssueComment(translations.NullTranslationHelper).Tool
+	require.NoError(t, toolsnaps.Test(tool.Name, tool))
+
+	assert.Equal(t, "update_issue_comment", tool.Name)
+	assert.NotEmpty(t, tool.Description)
+	schema := tool.InputSchema.(*jsonschema.Schema)
+	assert.Contains(t, schema.Properties, "owner")
+	assert.Contains(t, schema.Properties, "repo")
+	assert.Contains(t, schema.Properties, "comment_id")
+	assert.Contains(t, schema.Properties, "body")
+	assert.ElementsMatch(t, schema.Required, []string{"owner", "repo", "comment_id", "body"})
+
+	resolved, err := schema.Resolve(nil)
+	require.NoError(t, err)
+
+	baseArgs := map[string]any{
+		"owner":      "owner",
+		"repo":       "repo",
+		"comment_id": 456,
+		"body":       "Updated comment",
+	}
+	tests := []struct {
+		name    string
+		args    map[string]any
+		isValid bool
+	}{
+		{
+			name:    "valid arguments",
+			args:    map[string]any{},
+			isValid: true,
+		},
+		{
+			name:    "missing required body",
+			args:    map[string]any{"body": nil},
+			isValid: false,
+		},
+		{
+			name:    "empty body",
+			args:    map[string]any{"body": ""},
+			isValid: false,
+		},
+		{
+			name:    "zero comment ID",
+			args:    map[string]any{"comment_id": 0},
+			isValid: false,
+		},
+		{
+			name:    "fractional comment ID",
+			args:    map[string]any{"comment_id": 1.5},
+			isValid: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			args := maps.Clone(baseArgs)
+			maps.Copy(args, tc.args)
+			err := resolved.Validate(args)
+			if tc.isValid {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestUpdateIssueCommentHandler(t *testing.T) {
+	t.Parallel()
+
+	updatedComment := &github.IssueComment{
+		ID:      github.Ptr(int64(456)),
+		Body:    github.Ptr("Updated comment"),
+		HTMLURL: github.Ptr("https://github.com/owner/repo/issues/42#issuecomment-456"),
+	}
+
+	tests := []struct {
+		name               string
+		mockedClient       *http.Client
+		requestArgs        map[string]any
+		expectToolError    bool
+		expectedToolErrMsg string
+	}{
+		{
+			name: "successful update",
+			mockedClient: MockHTTPClientWithHandlers(map[string]http.HandlerFunc{
+				PatchReposIssuesCommentByOwnerByRepoByCommentID: expectRequestBody(t, map[string]any{
+					"body": "Updated comment",
+				}).andThen(mockResponse(t, http.StatusOK, updatedComment)),
+			}),
+			requestArgs: map[string]any{
+				"owner":      "owner",
+				"repo":       "repo",
+				"comment_id": float64(456),
+				"body":       "Updated comment",
+			},
+		},
+		{
+			name: "missing body",
+			requestArgs: map[string]any{
+				"owner":      "owner",
+				"repo":       "repo",
+				"comment_id": float64(456),
+			},
+			expectToolError:    true,
+			expectedToolErrMsg: "missing required parameter: body",
+		},
+		{
+			name: "empty body",
+			requestArgs: map[string]any{
+				"owner":      "owner",
+				"repo":       "repo",
+				"comment_id": float64(456),
+				"body":       "",
+			},
+			expectToolError:    true,
+			expectedToolErrMsg: "body cannot be empty when provided",
+		},
+		{
+			name: "negative comment ID",
+			requestArgs: map[string]any{
+				"owner":      "owner",
+				"repo":       "repo",
+				"comment_id": float64(-1),
+				"body":       "Updated comment",
+			},
+			expectToolError:    true,
+			expectedToolErrMsg: "comment_id must be greater than 0",
+		},
+		{
+			name: "fractional comment ID",
+			requestArgs: map[string]any{
+				"owner":      "owner",
+				"repo":       "repo",
+				"comment_id": float64(1.5),
+				"body":       "Updated comment",
+			},
+			expectToolError:    true,
+			expectedToolErrMsg: "parameter comment_id is not a valid number",
+		},
+		{
+			name: "API error",
+			mockedClient: MockHTTPClientWithHandlers(map[string]http.HandlerFunc{
+				PatchReposIssuesCommentByOwnerByRepoByCommentID: mockResponse(t, http.StatusNotFound, `{"message": "Not Found"}`),
+			}),
+			requestArgs: map[string]any{
+				"owner":      "owner",
+				"repo":       "repo",
+				"comment_id": float64(456),
+				"body":       "Updated comment",
+			},
+			expectToolError:    true,
+			expectedToolErrMsg: "failed to update issue comment",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := mustNewGHClient(t, tc.mockedClient)
+			deps := BaseDeps{Client: client}
+			serverTool := UpdateIssueComment(translations.NullTranslationHelper)
+			handler := serverTool.Handler(deps)
+
+			request := createMCPRequest(tc.requestArgs)
+			result, err := handler(ContextWithDeps(context.Background(), deps), &request)
+			require.NoError(t, err)
+
+			if tc.expectToolError {
+				require.True(t, result.IsError)
+				assert.Contains(t, getErrorResult(t, result).Text, tc.expectedToolErrMsg)
+				return
+			}
+
+			require.False(t, result.IsError)
+			var response MinimalResponse
+			require.NoError(t, json.Unmarshal([]byte(getTextResult(t, result).Text), &response))
+			assert.Equal(t, "456", response.ID)
+			assert.Equal(t, "https://github.com/owner/repo/issues/42#issuecomment-456", response.URL)
+		})
+	}
+}
+
 func Test_RemoveSubIssue(t *testing.T) {
 	// Verify tool definition once
 	serverTool := SubIssueWrite(translations.NullTranslationHelper)
@@ -6546,8 +6846,8 @@ func Test_RemoveSubIssue(t *testing.T) {
 	// Setup mock issue for success case (matches GitHub API response format - the updated parent issue)
 	mockIssue := &github.Issue{
 		Number:  github.Ptr(42),
-		Title:   github.Ptr("Parent Issue"),
-		Body:    github.Ptr("This is the parent issue after sub-issue removal"),
+		Title:   github.Ptr("<script>alert(1)</script>can't \"quote\" AT&T\u200B"),
+		Body:    github.Ptr("<script>alert(1)</script>This is **Markdown**\u200B"),
 		State:   github.Ptr("open"),
 		HTMLURL: github.Ptr("https://github.com/owner/repo/issues/42"),
 		User: &github.User{
@@ -6725,8 +7025,8 @@ func Test_RemoveSubIssue(t *testing.T) {
 			err = json.Unmarshal([]byte(textContent.Text), &returnedIssue)
 			require.NoError(t, err)
 			assert.Equal(t, *tc.expectedIssue.Number, *returnedIssue.Number)
-			assert.Equal(t, *tc.expectedIssue.Title, *returnedIssue.Title)
-			assert.Equal(t, *tc.expectedIssue.Body, *returnedIssue.Body)
+			assert.Equal(t, "can't \"quote\" AT&T", *returnedIssue.Title)
+			assert.Equal(t, "<script>alert(1)</script>This is **Markdown**", *returnedIssue.Body)
 			assert.Equal(t, *tc.expectedIssue.State, *returnedIssue.State)
 			assert.Equal(t, *tc.expectedIssue.HTMLURL, *returnedIssue.HTMLURL)
 			assert.Equal(t, *tc.expectedIssue.User.Login, *returnedIssue.User.Login)
@@ -6754,8 +7054,8 @@ func Test_ReprioritizeSubIssue(t *testing.T) {
 	// Setup mock issue for success case (matches GitHub API response format - the updated parent issue)
 	mockIssue := &github.Issue{
 		Number:  github.Ptr(42),
-		Title:   github.Ptr("Parent Issue"),
-		Body:    github.Ptr("This is the parent issue with reprioritized sub-issues"),
+		Title:   github.Ptr("<script>alert(1)</script>can't \"quote\" AT&T\u200B"),
+		Body:    github.Ptr("<script>alert(1)</script>This is **Markdown**\u200B"),
 		State:   github.Ptr("open"),
 		HTMLURL: github.Ptr("https://github.com/owner/repo/issues/42"),
 		User: &github.User{
@@ -6985,8 +7285,8 @@ func Test_ReprioritizeSubIssue(t *testing.T) {
 			err = json.Unmarshal([]byte(textContent.Text), &returnedIssue)
 			require.NoError(t, err)
 			assert.Equal(t, *tc.expectedIssue.Number, *returnedIssue.Number)
-			assert.Equal(t, *tc.expectedIssue.Title, *returnedIssue.Title)
-			assert.Equal(t, *tc.expectedIssue.Body, *returnedIssue.Body)
+			assert.Equal(t, "can't \"quote\" AT&T", *returnedIssue.Title)
+			assert.Equal(t, "<script>alert(1)</script>This is **Markdown**", *returnedIssue.Body)
 			assert.Equal(t, *tc.expectedIssue.State, *returnedIssue.State)
 			assert.Equal(t, *tc.expectedIssue.HTMLURL, *returnedIssue.HTMLURL)
 			assert.Equal(t, *tc.expectedIssue.User.Login, *returnedIssue.User.Login)
