@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	ghErrors "github.com/github/github-mcp-server/pkg/errors"
 	"github.com/github/github-mcp-server/pkg/ifc"
@@ -17,6 +18,15 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func containsForkQualifier(query string) bool {
+	for _, field := range strings.Fields(strings.ToLower(query)) {
+		if field == "fork:true" || field == "fork:false" || field == "fork:only" {
+			return true
+		}
+	}
+	return false
+}
 
 // SearchRepositories creates a tool to search for GitHub repositories.
 func SearchRepositories(t translations.TranslationHelperFunc) inventory.ServerTool {
@@ -63,6 +73,14 @@ func SearchRepositories(t translations.TranslationHelperFunc) inventory.ServerTo
 			query, err := RequiredParam[string](args, "query")
 			if err != nil {
 				return utils.NewToolResultError(err.Error()), nil, nil
+			}
+			// GitHub repository search excludes forks by default unless a fork qualifier
+			// is present. MCP clients frequently use this tool to resolve repositories
+			// owned by the authenticated user, where silently hiding forks makes valid
+			// repositories appear not to exist. Include forks unless the caller has
+			// explicitly chosen fork:true, fork:false, or fork:only semantics.
+			if !containsForkQualifier(query) {
+				query = strings.TrimSpace(query) + " fork:true"
 			}
 			sort, err := OptionalParam[string](args, "sort")
 			if err != nil {
