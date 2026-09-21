@@ -2,11 +2,13 @@ package github
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,7 +27,7 @@ const maxChatGPTRepositoryFileBytes int64 = 100 << 20
 func generateReposToolsetInstructions(_ *inventory.Inventory) string {
 	return `## Repository files
 
-When a ChatGPT attachment, generated artifact, or sandbox file must be created or replaced in a repository, prefer github_repository_file_upload. Pass the local sandbox file to its file parameter; ChatGPT supplies the actual file through openai/fileParams. Do not create a GitHub Actions workflow merely to transport or update file bytes when this tool is available.
+When ChatGPT attachments, generated artifacts, or sandbox files must be created or replaced in a repository, prefer github_repository_file_upload. For one file, pass path + file. For multiple files, pass parallel paths + files arrays so all files are committed atomically in one Git commit. ChatGPT supplies file objects through openai/fileParams. Do not create a GitHub Actions workflow merely to transport or update file bytes when this tool is available.
 
 When complete repository file bytes are needed for local inspection, especially for a large file, prefer github_file_download. It returns an MCP resource link that lets the host materialize the whole file without placing its contents in model context.`
 }
@@ -116,10 +118,8 @@ func chatGPTFileHTTPClient() *http.Client {
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("download host did not resolve")
 		}
-		for _, ip := range ips {
-			if unsafeDownloadIP(ip) {
-				return nil, fmt.Errorf("download host resolves to a non-public address")
-			}
+		if slices.ContainsFunc(ips, unsafeDownloadIP) {
+			return nil, fmt.Errorf("download host resolves to a non-public address")
 		}
 		var lastErr error
 		for _, ip := range ips {
@@ -174,16 +174,16 @@ func downloadChatGPTFile(ctx context.Context, rawURL string) ([]byte, error) {
 	return content, nil
 }
 
-// RepositoryFileUpload commits a ChatGPT-provided file directly into a repository.
+// RepositoryFileUpload commits one or more ChatGPT-provided files directly into a repository.
 func RepositoryFileUpload(t translations.TranslationHelperFunc) inventory.ServerTool {
 	return NewTool(
 		ToolsetMetadataRepos,
 		mcp.Tool{
-			Meta: mcp.Meta{"openai/fileParams": []string{"file"}},
-			Name: "github_repository_file_upload",
-			Description: t("TOOL_GITHUB_REPOSITORY_FILE_UPLOAD_DESCRIPTION", "Create or replace a repository file from a ChatGPT attachment, generated artifact, or sandbox file without sending the file contents through model context. ChatGPT injects the file parameter through openai/fileParams; pass the local /mnt/data file to that parameter rather than a pathname string. The tool automatically resolves the existing target SHA when updating."),
+			Meta:        mcp.Meta{"openai/fileParams": []string{"file", "files"}},
+			Name:        "github_repository_file_upload",
+			Description: t("TOOL_GITHUB_REPOSITORY_FILE_UPLOAD_DESCRIPTION", "Create or replace one or more repository files from ChatGPT attachments, generated artifacts, or sandbox files without sending file contents through model context. Use path + file for one file, or parallel paths + files arrays for multiple files; batch mode commits all files atomically in one Git commit. ChatGPT injects file parameters through openai/fileParams."),
 			Annotations: &mcp.ToolAnnotations{
-				Title:           t("TOOL_GITHUB_REPOSITORY_FILE_UPLOAD_USER_TITLE", "Commit ChatGPT file to repository"),
+				Title:           t("TOOL_GITHUB_REPOSITORY_FILE_UPLOAD_USER_TITLE", "Commit ChatGPT file(s) to repository"),
 				ReadOnlyHint:    false,
 				DestructiveHint: jsonschema.Ptr(true),
 			},
@@ -192,13 +192,15 @@ func RepositoryFileUpload(t translations.TranslationHelperFunc) inventory.Server
 				Properties: map[string]*jsonschema.Schema{
 					"owner":   {Type: "string", Description: "Repository owner."},
 					"repo":    {Type: "string", Description: "Repository name."},
-					"path":    {Type: "string", Description: "Repository path to create or replace."},
+					"path":    {Type: "string", Description: "Repository path for single-file mode."},
 					"file":    chatGPTFileSchema(),
+					"paths":   {Type: "array", Description: "Repository paths for batch mode, in the same order as files.", Items: &jsonschema.Schema{Type: "string"}},
+					"files":   {Type: "array", Description: "ChatGPT-provided file objects for batch mode. Each item corresponds to the path at the same index.", Items: chatGPTFileSchema()},
 					"message": {Type: "string", Description: "Commit message."},
 					"branch":  {Type: "string", Description: "Branch to update. Omit to use the repository default branch."},
-					"sha":     {Type: "string", Description: "Optional expected blob SHA for an existing target. When omitted, the current SHA is detected automatically."},
+					"sha":     {Type: "string", Description: "Optional expected blob SHA for an existing target in single-file mode."},
 				},
-				Required: []string{"owner", "repo", "path", "file", "message"},
+				Required: []string{"owner", "repo", "message"},
 			},
 		},
 		scopes.RequireAll(scopes.Repo),
@@ -211,37 +213,91 @@ func RepositoryFileUpload(t translations.TranslationHelperFunc) inventory.Server
 			if err != nil {
 				return utils.NewToolResultError(err.Error()), nil, nil
 			}
-			repoPath, err := RequiredParam[string](args, "path")
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
-			}
 			message, err := RequiredParam[string](args, "message")
 			if err != nil {
 				return utils.NewToolResultError(err.Error()), nil, nil
-			}
-			file, err := parseChatGPTFileInput(args, "file")
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
-			}
-			if strings.TrimSpace(repoPath) == "" || strings.HasSuffix(repoPath, "/") {
-				return utils.NewToolResultError("path must point to a repository file"), nil, nil
 			}
 			if strings.TrimSpace(message) == "" {
 				return utils.NewToolResultError("message must not be empty"), nil, nil
 			}
 
-			content, err := downloadChatGPTFile(ctx, file.DownloadURL)
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
-			}
-
 			branch, _ := OptionalParam[string](args, "branch")
-			targetSHA, _ := OptionalParam[string](args, "sha")
 			client, err := deps.GetClient(ctx)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to get GitHub client: %w", err)
 			}
 
+			if rawFiles, hasFiles := args["files"]; hasFiles && rawFiles != nil {
+				rawPaths, ok := args["paths"].([]any)
+				if !ok {
+					return utils.NewToolResultError("paths must be an array when files is provided"), nil, nil
+				}
+				fileList, ok := rawFiles.([]any)
+				if !ok {
+					return utils.NewToolResultError("files must be an array of ChatGPT-provided file objects"), nil, nil
+				}
+				if len(fileList) == 0 || len(fileList) != len(rawPaths) {
+					return utils.NewToolResultError("paths and files must be non-empty arrays of equal length"), nil, nil
+				}
+
+				paths := make([]string, len(rawPaths))
+				files := make([]chatGPTFileInput, len(fileList))
+				contents := make([][]byte, len(fileList))
+				for i := range fileList {
+					path, ok := rawPaths[i].(string)
+					if !ok || strings.TrimSpace(path) == "" || strings.HasSuffix(path, "/") {
+						return utils.NewToolResultError(fmt.Sprintf("paths[%d] must point to a repository file", i)), nil, nil
+					}
+					path, err = validateRelativePath(path)
+					if err != nil {
+						return utils.NewToolResultError(fmt.Sprintf("invalid paths[%d]: %s", i, err)), nil, nil
+					}
+					paths[i] = path
+					itemArgs := map[string]any{"file": fileList[i]}
+					files[i], err = parseChatGPTFileInput(itemArgs, "file")
+					if err != nil {
+						return utils.NewToolResultError(fmt.Sprintf("files[%d]: %s", i, err)), nil, nil
+					}
+					contents[i], err = downloadChatGPTFile(ctx, files[i].DownloadURL)
+					if err != nil {
+						return utils.NewToolResultError(fmt.Sprintf("files[%d]: %s", i, err)), nil, nil
+					}
+				}
+
+				result, err := commitChatGPTFiles(ctx, client, owner, repo, branch, message, paths, contents)
+				if err != nil {
+					return utils.NewToolResultError(err.Error()), nil, nil
+				}
+				uploaded := make([]map[string]any, len(files))
+				for i, file := range files {
+					uploaded[i] = map[string]any{
+						"path":      paths[i],
+						"file_id":   file.FileID,
+						"file_name": file.FileName,
+						"mime_type": file.MIMEType,
+						"bytes":     len(contents[i]),
+					}
+				}
+				return marshalWriteResult(map[string]any{"result": result, "files": uploaded})
+			}
+
+			repoPath, err := RequiredParam[string](args, "path")
+			if err != nil {
+				return utils.NewToolResultError("single-file mode requires path and file; batch mode requires paths and files"), nil, nil
+			}
+			file, err := parseChatGPTFileInput(args, "file")
+			if err != nil {
+				return utils.NewToolResultError("single-file mode requires path and file; batch mode requires paths and files"), nil, nil
+			}
+			if strings.TrimSpace(repoPath) == "" || strings.HasSuffix(repoPath, "/") {
+				return utils.NewToolResultError("path must point to a repository file"), nil, nil
+			}
+			content, err := downloadChatGPTFile(ctx, file.DownloadURL)
+			if err != nil {
+				return utils.NewToolResultError(err.Error()), nil, nil
+			}
+
+			targetSHA, _ := OptionalParam[string](args, "sha")
 			if targetSHA == "" {
 				existing, directory, resp, getErr := client.Repositories.GetContents(ctx, owner, repo, repoPath, &github.RepositoryContentGetOptions{Ref: branch})
 				switch {
@@ -283,6 +339,75 @@ func RepositoryFileUpload(t translations.TranslationHelperFunc) inventory.Server
 			})
 		},
 	)
+}
+
+func commitChatGPTFiles(ctx context.Context, client *github.Client, owner, repo, branch, message string, paths []string, contents [][]byte) (*github.Commit, error) {
+	if branch == "" {
+		repository, resp, err := client.Repositories.Get(ctx, owner, repo)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve repository default branch: %w", err)
+		}
+		closeGitHubResponse(resp)
+		branch = repository.GetDefaultBranch()
+		if branch == "" {
+			return nil, fmt.Errorf("repository has no default branch")
+		}
+	}
+
+	ref, resp, err := client.Git.GetRef(ctx, owner, repo, "refs/heads/"+branch)
+	if err != nil {
+		if ghErr, ok := err.(*github.ErrorResponse); ok && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+			ref, err = createReferenceFromDefaultBranch(ctx, client, owner, repo, branch)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create branch from default: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to get branch reference: %w", err)
+		}
+	}
+	closeGitHubResponse(resp)
+
+	baseCommit, resp, err := client.Git.GetCommit(ctx, owner, repo, ref.GetObject().GetSHA())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get base commit: %w", err)
+	}
+	closeGitHubResponse(resp)
+
+	entries := make([]*github.TreeEntry, 0, len(paths))
+	for i, path := range paths {
+		encoded := base64.StdEncoding.EncodeToString(contents[i])
+		blob, resp, err := client.Git.CreateBlob(ctx, owner, repo, github.Blob{Content: github.Ptr(encoded), Encoding: github.Ptr("base64")})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create blob for %s: %w", path, err)
+		}
+		closeGitHubResponse(resp)
+		entries = append(entries, &github.TreeEntry{
+			Path: github.Ptr(path),
+			Mode: github.Ptr("100644"),
+			Type: github.Ptr("blob"),
+			SHA:  blob.SHA,
+		})
+	}
+
+	newTree, resp, err := client.Git.CreateTree(ctx, owner, repo, baseCommit.GetTree().GetSHA(), entries)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tree: %w", err)
+	}
+	closeGitHubResponse(resp)
+
+	commit := github.Commit{Message: github.Ptr(message), Tree: newTree, Parents: []*github.Commit{{SHA: baseCommit.SHA}}}
+	newCommit, resp, err := client.Git.CreateCommit(ctx, owner, repo, commit, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create commit: %w", err)
+	}
+	closeGitHubResponse(resp)
+
+	_, resp, err = client.Git.UpdateRef(ctx, owner, repo, ref.GetRef(), github.UpdateRef{SHA: newCommit.GetSHA(), Force: github.Ptr(false)})
+	if err != nil {
+		return nil, fmt.Errorf("failed to update branch reference: %w", err)
+	}
+	closeGitHubResponse(resp)
+	return newCommit, nil
 }
 
 // FileDownload returns a complete repository file as an MCP resource link for host-side materialization.

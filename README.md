@@ -1451,15 +1451,17 @@ The following sets of tools are available:
   - `query`: GraphQL query or mutation document. (string, required)
   - `variables`: Optional GraphQL variables object. (object, optional)
 
-- **github_repository_file_upload** - Commit ChatGPT file to repository
+- **github_repository_file_upload** - Commit ChatGPT file(s) to repository
   - **OAuth Challenge Scopes**: `repo`
   - `branch`: Branch to update. Omit to use the repository default branch. (string, optional)
-  - `file`: ChatGPT-provided file object. Pass a local sandbox file to this parameter; ChatGPT supplies the authorized file reference. (object, required)
+  - `file`: ChatGPT-provided file object. Pass a local sandbox file to this parameter; ChatGPT supplies the authorized file reference. (object, optional)
+  - `files`: ChatGPT-provided file objects for batch mode. Each item corresponds to the path at the same index. (object[], optional)
   - `message`: Commit message. (string, required)
   - `owner`: Repository owner. (string, required)
-  - `path`: Repository path to create or replace. (string, required)
+  - `path`: Repository path for single-file mode. (string, optional)
+  - `paths`: Repository paths for batch mode, in the same order as files. (string[], optional)
   - `repo`: Repository name. (string, required)
-  - `sha`: Optional expected blob SHA for an existing target. When omitted, the current SHA is detected automatically. (string, optional)
+  - `sha`: Optional expected blob SHA for an existing target in single-file mode. (string, optional)
 
 - **list_branches** - List branches
   - **OAuth Challenge Scopes**: `repo`
