@@ -69,7 +69,7 @@ func Test_SearchRepositories(t *testing.T) {
 			name: "successful repository search",
 			mockedClient: MockHTTPClientWithHandlers(map[string]http.HandlerFunc{
 				GetSearchRepositories: expectQueryParams(t, map[string]string{
-					"q":        "golang test",
+					"q":        "golang test fork:true",
 					"sort":     "stars",
 					"order":    "desc",
 					"page":     "2",
@@ -92,7 +92,7 @@ func Test_SearchRepositories(t *testing.T) {
 			name: "repository search with default pagination",
 			mockedClient: MockHTTPClientWithHandlers(map[string]http.HandlerFunc{
 				GetSearchRepositories: expectQueryParams(t, map[string]string{
-					"q":        "golang test",
+					"q":        "golang test fork:true",
 					"page":     "1",
 					"per_page": "30",
 				}).andThen(
@@ -278,6 +278,20 @@ func Test_SearchRepositories_IFC_InsidersMode(t *testing.T) {
 	})
 }
 
+func TestContainsForkQualifier(t *testing.T) {
+	tests := map[string]bool{
+		"repo":            false,
+		"repo fork:true":  true,
+		"repo FORK:FALSE": true,
+		"fork:only repo":  true,
+	}
+	for query, want := range tests {
+		if got := containsForkQualifier(query); got != want {
+			t.Fatalf("containsForkQualifier(%q) = %v, want %v", query, got, want)
+		}
+	}
+}
+
 func Test_SearchRepositories_FullOutput(t *testing.T) {
 	mockSearchResult := &github.RepositoriesSearchResult{
 		Total:             github.Ptr(1),
@@ -296,7 +310,7 @@ func Test_SearchRepositories_FullOutput(t *testing.T) {
 
 	mockedClient := MockHTTPClientWithHandlers(map[string]http.HandlerFunc{
 		GetSearchRepositories: expectQueryParams(t, map[string]string{
-			"q":        "golang test",
+			"q":        "golang test fork:true",
 			"page":     "1",
 			"per_page": "30",
 		}).andThen(
