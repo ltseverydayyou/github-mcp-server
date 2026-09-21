@@ -3,6 +3,9 @@ package github
 import (
 	"net"
 	"testing"
+
+	"github.com/github/github-mcp-server/pkg/translations"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 func TestParseChatGPTFileInput(t *testing.T) {
@@ -56,5 +59,21 @@ func TestUnsafeDownloadIP(t *testing.T) {
 	}
 	if unsafeDownloadIP(net.ParseIP("8.8.8.8")) {
 		t.Fatal("public address must be accepted")
+	}
+}
+
+func TestRepositoryFileUploadSupportsBatchFiles(t *testing.T) {
+	tool := RepositoryFileUpload(translations.NullTranslationHelper).Tool
+	schema, ok := tool.InputSchema.(*jsonschema.Schema)
+	if !ok {
+		t.Fatal("expected JSON schema input")
+	}
+	for _, name := range []string{"path", "file", "paths", "files"} {
+		if _, ok := schema.Properties[name]; !ok {
+			t.Fatalf("missing %s property", name)
+		}
+	}
+	if len(schema.Required) != 3 {
+		t.Fatalf("expected owner, repo, message to be the only globally required fields, got %v", schema.Required)
 	}
 }
