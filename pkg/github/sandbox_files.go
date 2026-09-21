@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -117,10 +118,8 @@ func chatGPTFileHTTPClient() *http.Client {
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("download host did not resolve")
 		}
-		for _, ip := range ips {
-			if unsafeDownloadIP(ip) {
-				return nil, fmt.Errorf("download host resolves to a non-public address")
-			}
+		if slices.ContainsFunc(ips, unsafeDownloadIP) {
+			return nil, fmt.Errorf("download host resolves to a non-public address")
 		}
 		var lastErr error
 		for _, ip := range ips {
