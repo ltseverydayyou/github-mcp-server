@@ -377,7 +377,7 @@ func commitChatGPTFiles(ctx context.Context, client *github.Client, owner, repo,
 	entries := make([]*github.TreeEntry, 0, len(paths))
 	for i, path := range paths {
 		encoded := base64.StdEncoding.EncodeToString(contents[i])
-		blob, resp, err := client.Git.CreateBlob(ctx, owner, repo, &github.Blob{Content: github.Ptr(encoded), Encoding: github.Ptr("base64")})
+		blob, resp, err := client.Git.CreateBlob(ctx, owner, repo, github.Blob{Content: github.Ptr(encoded), Encoding: github.Ptr("base64")})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create blob for %s: %w", path, err)
 		}
