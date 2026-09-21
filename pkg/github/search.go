@@ -20,7 +20,7 @@ import (
 )
 
 func containsForkQualifier(query string) bool {
-	for _, field := range strings.Fields(strings.ToLower(query)) {
+	for field := range strings.FieldsSeq(strings.ToLower(query)) {
 		if field == "fork:true" || field == "fork:false" || field == "fork:only" {
 			return true
 		}
